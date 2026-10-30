@@ -1,0 +1,8 @@
+{
+  "name": "cloudtak-plugin-sar",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "CloudTAK plugin: terrain-aware search and rescue range rings and travel-time isochrones for New Zealand",
+  "license": "AGPL-3.0-only",
+  "main": "index.ts"
+}
