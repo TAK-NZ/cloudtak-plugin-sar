@@ -80,7 +80,6 @@ export function markerAnchor(style: StyleLike): string | undefined {
         ?? style.layers.find((l) => !ours(l.id) && l.type === 'symbol')?.id;
 }
 
-const empty = (): GeoJsonData => ({ type: 'FeatureCollection', features: [] });
 
 /** Bottom to top. */
 const LAYER_ORDER = [LAYER_FILL, LAYER_OUTLINE, LAYER_LABEL, LAYER_IPP];
