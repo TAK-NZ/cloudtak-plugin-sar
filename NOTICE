@@ -1,7 +1,8 @@
 cloudtak-plugin-sar
 This plugin is licensed under the GNU Affero General Public License v3.0 only. See LICENSE.
-The plugin imports src/std.ts from the CloudTAK app, so the built CloudTAK web bundle that
-includes it is a combined work under AGPL-3.0.
+The plugin imports files of the CloudTAK app (src/std.ts, src/stores/app.ts,
+src/base/subscription.ts and a menu template), so the built CloudTAK web bundle that includes it
+is a combined work under AGPL-3.0.
 The analysis backend is TAK-NZ/sar-engine, a fork of WiSAR Terrain-Aware Range Rings by
 Jamie F. Weleber (AGPL-3.0): https://github.com/clptak/WiSAR-Terrain-Aware-Range-Rings
 Third-party data and method
@@ -10,3 +11,14 @@ The engine returns these attributions, which the plugin shows next to the contou
   Elevation: LINZ NZ Elevation, CC BY 4.0, with Copernicus GLO-30
   Roads and trails: OpenStreetMap contributors, ODbL, https://www.openstreetmap.org/copyright
   Method: WiSAR Terrain-Aware Range Rings, AGPL-3.0
+TARR mode adds:
+  Subject distances: Koester (2008), Lost Person Behavior, via Ferguson (2013), IGT4SAR
+  Calibration multipliers: WiSAR, Coconino County, Arizona (not calibrated for New Zealand)
+The engine sends these lines with a TARR result too.
+
+Code adapted from other projects
+  lib/zip.ts, lib/DataSyncList.vue, lib/DataSyncPicker.vue and lib/missions.ts are adapted from
+  TAK-NZ/cloudtak-plugin-rubbersheet (Apache License 2.0): the store-only zip writer, the Data Sync
+  list with checkbox rows, and the list of subscribed Data Syncs.
+  lib/kml.ts follows the KML export of the WiSAR reference tool (AGPL-3.0), function
+  downloadContoursKml in app/static/app.js.
