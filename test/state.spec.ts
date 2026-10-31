@@ -3,13 +3,16 @@ import { nextTick } from 'vue';
 import { STORAGE_KEY } from '../lib/constants.ts';
 import type { CalcError } from '../lib/types.ts';
 import {
-    addBand, announce, applySuggestion, bindController, bindStorage, cancelRun, chooseMarker, clearAll, controller, failRun,
-    finishRun, form, removeBand, resetAll, session, setStartPoint, startRun, suggestionButtons, toggleMarkers,
+    addBand, addQuickBand, announce, applySuggestion, bindController, bindStorage, cancelRun, chooseMarker, clearAll, controller, failRun,
+    finishRun, form, removeBand, resetAll, session, setEcoregion, setMode, setProfile, setSpeed, setStartPoint, setTerrain, startRun,
+    suggestionButtons, toggleMarkers,
 } from '../lib/state.ts';
 import type { StorageLike } from '../lib/state.ts';
 import { parseResult } from '../lib/result.ts';
-import { okBody } from './fixtures.ts';
-import type { TravelTimeResult } from '../lib/types.ts';
+import { okBody, tarrBody } from './fixtures.ts';
+import type { RunMeta, TarrResult, TravelTimeResult } from '../lib/types.ts';
+
+const meta: RunMeta = { mode: 'travel-time', ranAt: '2026-03-01T12:00:00Z', ipp: { lat: -40, lng: 172 }, speedKmh: 2.5, bandsHours: [1, 2, 4] };
 
 function memory(initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } {
     const data = { ...initial };
@@ -48,16 +51,41 @@ describe('defaults and persistence', () => {
         expect([...form.bands]).toEqual([1, 2, 4, 8]);
     });
 
-    it('saves speed, bands and radius under taknz-sar:v1 and never the start point', () => {
+    it('saves mode, speed, bands, radius and the profile choice under taknz-sar:v1 and never the start point', () => {
         const store = memory();
+        session.tarrAvailable = true;
         bindStorage(store);
         form.speed = '3';
         form.radius = '12';
         removeBand(8);
+        setMode('tarr');
+        setProfile('Hiker');
+        setEcoregion('Temperate');
+        setTerrain('Mountainous');
         setStartPoint(172, -40);
-        expect(JSON.parse(store.data[STORAGE_KEY])).toEqual({ speed: '3', bands: [1, 2, 4], radius: '12' });
+        expect(JSON.parse(store.data[STORAGE_KEY])).toEqual({
+            mode: 'tarr', speed: '3', bands: [1, 2, 4], radius: '12', profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous',
+        });
         expect(store.data[STORAGE_KEY]).not.toContain('172');
         expect(Object.keys(store.data)).toEqual([STORAGE_KEY]);
+    });
+
+    it('loads the saved mode and profile, and drops what the table or the server no longer offers', () => {
+        const saved = { mode: 'tarr', profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous' };
+        session.tarrAvailable = true;
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify(saved) }));
+        expect([form.mode, form.profile, form.ecoregion, form.terrain]).toEqual(['tarr', 'Hiker', 'Temperate', 'Mountainous']);
+        // Terrain not offered for this ecoregion: kept up to there.
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ ...saved, ecoregion: 'Dry', terrain: 'Flat', profile: 'Angler' }) }));
+        expect([form.profile, form.ecoregion, form.terrain]).toEqual(['Angler', 'Dry', '']);
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ ...saved, profile: 'Wizard' }) }));
+        expect([form.profile, form.ecoregion, form.terrain]).toEqual(['', '', '']);
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ ...saved, mode: 'other' }) }));
+        expect(form.mode).toBe('travel-time');
+        // TARR saved but the server cannot do it: travel time.
+        session.tarrAvailable = false;
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify(saved) }));
+        expect(form.mode).toBe('travel-time');
     });
 
     it('loads saved values and falls back to the defaults for unusable ones', () => {
@@ -132,9 +160,9 @@ describe('run state and announcements', () => {
         startRun();
         expect(session.run).toBe('running');
         expect(session.announcement).toContain('Calculating');
-        finishRun(result());
+        finishRun(result(), meta, ['a', 'b']);
         expect(session.run).toBe('done');
-        expect(session.announcement).toBe('Calculation finished. 3 contours drawn.');
+        expect(session.announcement).toBe('Calculation finished. 3 contours and the start point added to the map as features.');
         startRun();
         cancelRun();
         expect(session.run).toBe('idle');
@@ -164,12 +192,20 @@ describe('run state and announcements', () => {
         expect(session.announcement.trim()).toBe('Same.');
     });
 
-    it('clearAll drops the result, the error and the start point but keeps speed, bands and radius', () => {
+    it('clearAll drops the result, the error and the start point but keeps the mode, speed, bands, radius and profile', () => {
         setStartPoint(172, -40);
         form.speed = '3';
-        finishRun(result());
+        form.mode = 'tarr';
+        form.profile = 'Hiker';
+        finishRun(result(), meta, ['a', 'b']);
+        session.movedTo = ['Sync'];
         clearAll();
         expect(session.result).toBeNull();
+        expect(session.meta).toBeNull();
+        expect(session.featureIds).toEqual([]);
+        expect(session.movedTo).toEqual([]);
+        expect(form.mode).toBe('tarr');
+        expect(form.profile).toBe('Hiker');
         expect(form.lat).toBe('');
         expect(form.lng).toBe('');
         expect(form.speed).toBe('3');
@@ -292,7 +328,10 @@ describe('applying a suggestion only edits the inputs', () => {
     });
 
     it('does not call run or any other controller function', () => {
-        const spies = { run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), close: vi.fn(), loadMarkers: vi.fn(async () => []) };
+        const spies = {
+            run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), loadMarkers: vi.fn(async () => []),
+            addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), exportFiles: vi.fn(async () => undefined),
+        };
         bindController(spies);
         failRun(dense({ radiusKm: 6, maxHours: 3 }));
         for (const button of suggestionButtons(session.error)) applySuggestion(button);
@@ -332,5 +371,84 @@ describe('markers', () => {
         expect(session.markersFailed).toBe(true);
         toggleMarkers();
         expect(session.markerOpen).toBe(false);
+    });
+});
+
+describe('mode and TARR choices', () => {
+    it('starts in travel time mode', () => {
+        expect(form.mode).toBe('travel-time');
+        expect(form.profile).toBe('');
+    });
+
+    it('switches mode and announces it', () => {
+        session.tarrAvailable = true;
+        setMode('tarr');
+        expect(form.mode).toBe('tarr');
+        expect(session.announcement).toBe('TARR analysis mode.');
+        setMode('travel-time');
+        expect(form.mode).toBe('travel-time');
+        expect(session.announcement).toBe('Travel time mode.');
+    });
+
+    it('ignores TARR when the server cannot do it, and any switch while running', () => {
+        setMode('tarr');
+        expect(form.mode).toBe('travel-time');
+        session.tarrAvailable = true;
+        startRun();
+        setMode('tarr');
+        expect(form.mode).toBe('travel-time');
+    });
+
+    it('resets the dependent choices when the profile or ecoregion changes', () => {
+        setProfile('Hiker');
+        setEcoregion('Dry');
+        setTerrain('Flat');
+        expect([form.profile, form.ecoregion, form.terrain]).toEqual(['Hiker', 'Dry', 'Flat']);
+        setEcoregion('Temperate');
+        expect(form.terrain).toBe('');
+        setTerrain('Mountainous');
+        setProfile('Camper');
+        expect([form.profile, form.ecoregion, form.terrain]).toEqual(['Camper', '', '']);
+    });
+
+    it('sets a speed preset as text', () => {
+        setSpeed(5);
+        expect(form.speed).toBe('5');
+        setSpeed(0.8);
+        expect(form.speed).toBe('0.8');
+    });
+
+    it('adds a quick band, and refuses a ninth', () => {
+        expect(addQuickBand(12)).toBeNull();
+        expect([...form.bands]).toEqual([1, 2, 4, 8, 12]);
+        form.bands = [1, 2, 3, 4, 5, 6, 7, 8];
+        expect(addQuickBand(12)).toBe('Use at most 8 time bands.');
+    });
+
+    it('announces a finished TARR run with rings', () => {
+        const r = parseResult(tarrBody(), 'tarr') as TarrResult;
+        finishRun(r, { ...meta, mode: 'tarr', profile: 'Hiker' }, ['a']);
+        expect(session.announcement).toBe('Calculation finished. 6 rings and the start point added to the map as features.');
+        expect(session.featureIds).toEqual(['a']);
+        expect(session.movedTo).toEqual([]);
+    });
+
+    it('announces which mode is calculating', () => {
+        startRun('tarr');
+        expect(session.announcement).toContain('TARR');
+        startRun('travel-time');
+        expect(session.announcement).toContain('travel time');
+    });
+
+    it('resetAll returns to the fresh state', () => {
+        session.tarrAvailable = true;
+        form.mode = 'tarr';
+        form.profile = 'Hiker';
+        session.featureIds = ['a'];
+        resetAll();
+        expect(form.mode).toBe('travel-time');
+        expect(form.profile).toBe('');
+        expect(session.featureIds).toEqual([]);
+        expect(session.tarrAvailable).toBe(false);
     });
 });

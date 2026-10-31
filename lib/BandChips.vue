@@ -34,6 +34,26 @@
                 </button>
             </li>
         </ul>
+        <div
+            v-if='quick.length'
+            class='d-flex flex-wrap gap-2 mb-2'
+            role='group'
+            aria-label='Quick add'
+            data-test='quick-bands'
+        >
+            <button
+                v-for='hours in quick'
+                :key='hours'
+                type='button'
+                class='btn btn-sm btn-outline-secondary'
+                style='min-height: 44px; min-width: 44px;'
+                :disabled='disabled || form.bands.length >= BANDS_MAX'
+                data-test='band-quick'
+                @click='addQuick(hours)'
+            >
+                Add {{ formatHours(hours) }}
+            </button>
+        </div>
         <div class='d-flex gap-2'>
             <input
                 id='sar-band-add'
@@ -64,7 +84,7 @@
             id='sar-band-help'
             class='form-hint small text-secondary mt-1'
         >
-            1 to 8 bands, each 0.25 to 24 h.
+            1 to 8 bands, each 0.25 to 24 h. <span v-text='HINT_BANDS' />
         </div>
         <div
             v-if='addError'
@@ -77,15 +97,21 @@
     </div>
 </template>
 <script setup lang='ts'>
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { IconX } from '@tabler/icons-vue';
+import { BANDS_MAX, QUICK_BANDS } from './constants.ts';
+import { HINT_BANDS } from './copy.ts';
 import { formatHours } from './format.ts';
-import { addBand, form, removeBand } from './state.ts';
+import { addBand, addQuickBand, form, removeBand } from './state.ts';
 
 defineProps<{ disabled?: boolean }>();
 
 const text = ref('');
 const addError = ref('');
+const quick = computed(() => QUICK_BANDS.filter((h) => !form.bands.includes(h)));
+function addQuick(hours: number): void {
+    addError.value = addQuickBand(hours) ?? '';
+}
 
 watch(text, () => {
     addError.value = '';

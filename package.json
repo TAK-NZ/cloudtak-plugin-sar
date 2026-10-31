@@ -1,8 +1,8 @@
 {
   "name": "cloudtak-plugin-sar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "CloudTAK plugin: travel-time contours for search and rescue planning in New Zealand",
+  "description": "CloudTAK plugin: travel time and TARR analysis for search and rescue planning in New Zealand, shown in the side menu, with map features, Data Sync and data package export",
   "license": "AGPL-3.0-only",
   "main": "index.ts",
   "scripts": {
