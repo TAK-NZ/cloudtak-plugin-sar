@@ -1,6 +1,6 @@
-import type { CalcError, CalcOutcome, Host, RelayStatus, Suggestions, TravelTimeBody } from './types.ts';
+import type { CalcError, CalcOutcome, CalcRequest, Host, Mode, RelayStatus, Suggestions } from './types.ts';
 import {
-    API_VERSIONS_SUPPORTED, CALCULATE_TIMEOUT_MS, CODE_AREA_TOO_DENSE, STATUS_PATH, STATUS_TIMEOUT_MS, TRAVEL_TIME_PATH,
+    API_VERSIONS_SUPPORTED, CALCULATE_TIMEOUT_MS, CODE_AREA_TOO_DENSE, STATUS_PATH, STATUS_TIMEOUT_MS, TARR_PATH, TRAVEL_TIME_PATH,
 } from './constants.ts';
 import { isBandHours, isRadius } from './validation.ts';
 import { parseResult } from './result.ts';
@@ -18,7 +18,14 @@ export function parseStatus(raw: unknown): RelayStatus | null {
     if (!isObject(raw)) return null;
     if (typeof raw.apiVersion !== 'number' || !Number.isInteger(raw.apiVersion)) return null;
     if (typeof raw.enabled !== 'boolean') return null;
-    return { apiVersion: raw.apiVersion, enabled: raw.enabled };
+    const status: RelayStatus = { apiVersion: raw.apiVersion, enabled: raw.enabled };
+    if (Array.isArray(raw.modes)) status.modes = raw.modes.filter((m): m is string => typeof m === 'string');
+    return status;
+}
+
+/** Whether the relay can route TARR runs. A relay that sends no `modes` is travel time only. */
+export function tarrAvailable(status: RelayStatus | null | undefined): boolean {
+    return status?.modes?.includes('tarr') === true;
 }
 
 async function readToken(host: Host): Promise<string | undefined> {
@@ -103,10 +110,10 @@ function rejected(json: unknown): CalcError {
     return error;
 }
 
-function classify(res: Response, json: unknown): CalcOutcome {
+function classify(res: Response, json: unknown, mode: Mode): CalcOutcome {
     const status = res.status;
     if (status === 200) {
-        const result = parseResult(json);
+        const result = parseResult(json, mode);
         return result ? { ok: true, result } : { ok: false, error: { kind: 'failed', status } };
     }
     const fail = (error: CalcError): CalcOutcome => ({ ok: false, error: { status, ...error } });
@@ -121,10 +128,10 @@ function classify(res: Response, json: unknown): CalcOutcome {
 }
 
 /**
- * Run one travel-time calculation through the relay. Never throws.
+ * Run one calculation (travel time or TARR) through the relay. Never throws.
  * `signal` is the user's cancel; our own timeout is separate and gives `timeout`.
  */
-export async function calculate(host: Host, body: TravelTimeBody, signal?: AbortSignal, timeoutMs: number = CALCULATE_TIMEOUT_MS): Promise<CalcOutcome> {
+export async function calculate(host: Host, request: CalcRequest, signal?: AbortSignal, timeoutMs: number = CALCULATE_TIMEOUT_MS): Promise<CalcOutcome> {
     if (signal?.aborted) return { ok: false, error: { kind: 'cancelled' } };
     const token = await readToken(host);
     if (!token) return { ok: false, error: { kind: 'unavailable', status: 401 } };
@@ -138,10 +145,10 @@ export async function calculate(host: Host, body: TravelTimeBody, signal?: Abort
     const onAbort = (): void => ctl.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-        const res = await host.fetch(host.origin() + TRAVEL_TIME_PATH, {
+        const res = await host.fetch(host.origin() + (request.mode === 'tarr' ? TARR_PATH : TRAVEL_TIME_PATH), {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify(request.body),
             signal: ctl.signal,
         });
         let json: unknown;
@@ -151,7 +158,7 @@ export async function calculate(host: Host, body: TravelTimeBody, signal?: Abort
             if (ctl.signal.aborted) throw new DOMException('Aborted', 'AbortError');
             json = undefined;
         }
-        return classify(res, json);
+        return classify(res, json, request.mode);
     } catch {
         if (signal?.aborted) return { ok: false, error: { kind: 'cancelled' } };
         return { ok: false, error: { kind: timedOut ? 'timeout' : 'network' } };

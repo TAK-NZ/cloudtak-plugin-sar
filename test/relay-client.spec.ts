@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculate, fetchStatus, parseSuggestions } from '../lib/relay-client.ts';
-import type { Host, TravelTimeBody } from '../lib/types.ts';
-import { htmlResponse, jsonResponse, okBody } from './fixtures.ts';
+import { calculate, fetchStatus, parseSuggestions, parseStatus, tarrAvailable } from '../lib/relay-client.ts';
+import type { CalcRequest, Host, TarrBody, TravelTimeBody } from '../lib/types.ts';
+import { htmlResponse, jsonResponse, okBody, tarrBody } from './fixtures.ts';
 
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -14,6 +14,8 @@ function makeHost(fetchImpl: FetchFn, token: string | undefined | (() => Promise
 }
 
 const body: TravelTimeBody = { ipp: { lat: -40, lng: 172 }, speed_kmh: 2.5, intervals_hours: [1, 2], radius_km: 10 };
+const request: CalcRequest = { mode: 'travel-time', body };
+const tarrReq: TarrBody = { ipp: { lat: -40, lng: 172 }, profile: 'Hiker' };
 
 afterEach(() => {
     vi.useRealTimers();
@@ -68,9 +70,9 @@ describe('fetchStatus', () => {
 describe('calculate: success', () => {
     it('posts the body with the Bearer token and parses the result', async () => {
         const host = makeHost(async () => jsonResponse(200, okBody()));
-        const out = await calculate(host, body);
+        const out = await calculate(host, request);
         expect(out.ok).toBe(true);
-        if (out.ok) expect(out.result.contours).toHaveLength(3);
+        if (out.ok && out.result.mode === 'travel-time') expect(out.result.contours).toHaveLength(3);
         const [url, init] = host.fetch.mock.calls[0] as [string, RequestInit];
         expect(url).toBe('https://cloudtak.example/api/sar/travel-time');
         expect(init.method).toBe('POST');
@@ -79,15 +81,69 @@ describe('calculate: success', () => {
     });
     it('treats a 200 with a wrong shape or HTML as a failure', async () => {
         for (const res of [jsonResponse(200, { status: 'ok' }), htmlResponse(200), jsonResponse(200, [])]) {
-            const out = await calculate(makeHost(async () => res), body);
+            const out = await calculate(makeHost(async () => res), request);
             expect(out).toEqual({ ok: false, error: { kind: 'failed', status: 200 } });
         }
     });
 });
 
+describe('status modes', () => {
+    it('reads the modes list and knows when TARR is available', async () => {
+        const host = makeHost(async () => jsonResponse(200, { apiVersion: 1, enabled: true, modes: ['travel-time', 'tarr'] }));
+        const { status } = await fetchStatus(host);
+        expect(status?.modes).toEqual(['travel-time', 'tarr']);
+        expect(tarrAvailable(status)).toBe(true);
+    });
+    it('treats a relay without modes as travel time only', () => {
+        const status = parseStatus({ apiVersion: 1, enabled: true });
+        expect(status?.modes).toBeUndefined();
+        expect(tarrAvailable(status)).toBe(false);
+        expect(tarrAvailable(null)).toBe(false);
+        expect(tarrAvailable(parseStatus({ apiVersion: 1, enabled: true, modes: ['travel-time'] }))).toBe(false);
+    });
+    it('keeps only text entries of the modes list', () => {
+        expect(parseStatus({ apiVersion: 1, enabled: true, modes: ['tarr', 3, null] })?.modes).toEqual(['tarr']);
+        expect(parseStatus({ apiVersion: 1, enabled: true, modes: 'tarr' })?.modes).toBeUndefined();
+    });
+});
+
+describe('calculate: TARR', () => {
+    it('posts the TARR body to /api/sar/tarr with the Bearer token and parses the rings', async () => {
+        const host = makeHost(async () => jsonResponse(200, tarrBody()));
+        const out = await calculate(host, { mode: 'tarr', body: tarrReq });
+        expect(out.ok).toBe(true);
+        if (out.ok && out.result.mode === 'tarr') expect(out.result.rings).toHaveLength(6);
+        const [url, init] = host.fetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe('https://cloudtak.example/api/sar/tarr');
+        expect(init.method).toBe('POST');
+        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-token-value');
+        expect(JSON.parse(init.body as string)).toEqual(tarrReq);
+    });
+    it('treats a travel-time answer to a TARR request, and the reverse, as a failure', async () => {
+        expect(await calculate(makeHost(async () => jsonResponse(200, okBody())), { mode: 'tarr', body: tarrReq }))
+            .toEqual({ ok: false, error: { kind: 'failed', status: 200 } });
+        expect(await calculate(makeHost(async () => jsonResponse(200, tarrBody())), request))
+            .toEqual({ ok: false, error: { kind: 'failed', status: 200 } });
+    });
+    it('classifies errors the same way as for travel time', async () => {
+        const kind = async (res: Response): Promise<unknown> => {
+            const out = await calculate(makeHost(async () => res), { mode: 'tarr', body: tarrReq });
+            return out.ok ? 'ok' : out.error;
+        };
+        expect(await kind(jsonResponse(400, {}))).toEqual({ kind: 'invalid', status: 400 });
+        expect(await kind(jsonResponse(429, {}, { 'Retry-After': '7' }))).toEqual({ kind: 'busy', status: 429, retryAfterS: 7 });
+        expect(await kind(jsonResponse(502, { status: 502 }))).toEqual({ kind: 'unavailable', status: 502 });
+        expect(await kind(jsonResponse(504, {}))).toMatchObject({ kind: 'timeout', status: 504 });
+        expect(await kind(jsonResponse(422, { message: 'Sea.' }))).toEqual({ kind: 'rejected', status: 422, message: 'Sea.' });
+        // The dense-area refusal of TARR has a code and no suggestions: no buttons.
+        expect(await kind(jsonResponse(422, { code: 'area_too_dense', message: 'Dense.' })))
+            .toEqual({ kind: 'rejected', status: 422, message: 'Dense.', code: 'area_too_dense' });
+    });
+});
+
 describe('calculate: errors', () => {
     const kindOf = async (res: Response | (() => Promise<Response>)): Promise<unknown> => {
-        const out = await calculate(makeHost(typeof res === 'function' ? res : async () => res), body);
+        const out = await calculate(makeHost(typeof res === 'function' ? res : async () => res), request);
         return out.ok ? 'ok' : out.error;
     };
 
@@ -96,7 +152,7 @@ describe('calculate: errors', () => {
     });
     it('is unavailable without a token and sends nothing', async () => {
         const host = makeHost(async () => jsonResponse(200, okBody()), '');
-        expect(await calculate(host, body)).toEqual({ ok: false, error: { kind: 'unavailable', status: 401 } });
+        expect(await calculate(host, request)).toEqual({ ok: false, error: { kind: 'unavailable', status: 401 } });
         expect(host.fetch).not.toHaveBeenCalled();
     });
     it('maps 400 and 413 to invalid', async () => {
@@ -129,7 +185,7 @@ describe('calculate: errors', () => {
 });
 
 describe('calculate: 422', () => {
-    const rejected = async (json: unknown): Promise<ReturnType<typeof calculate>> => calculate(makeHost(async () => jsonResponse(422, json)), body);
+    const rejected = async (json: unknown): Promise<ReturnType<typeof calculate>> => calculate(makeHost(async () => jsonResponse(422, json)), request);
     const errorOf = async (json: unknown): Promise<Record<string, unknown>> => {
         const out = await rejected(json);
         if (out.ok) throw new Error('expected an error');
@@ -194,7 +250,7 @@ describe('calculate: 422', () => {
         for (const json of [{}, { message: '' }, { message: 5 }, 'x', null]) {
             expect(await errorOf(json)).toEqual({ kind: 'failed', status: 422 });
         }
-        const html = await calculate(makeHost(async () => htmlResponse(422)), body);
+        const html = await calculate(makeHost(async () => htmlResponse(422)), request);
         expect(html).toEqual({ ok: false, error: { kind: 'failed', status: 422 } });
     });
 });
@@ -208,13 +264,13 @@ describe('calculate: cancel and timeout', () => {
         const host = makeHost(async () => jsonResponse(200, okBody()));
         const ctl = new AbortController();
         ctl.abort();
-        expect(await calculate(host, body, ctl.signal)).toEqual({ ok: false, error: { kind: 'cancelled' } });
+        expect(await calculate(host, request, ctl.signal)).toEqual({ ok: false, error: { kind: 'cancelled' } });
         expect(host.fetch).not.toHaveBeenCalled();
     });
     it('is cancelled when the user aborts a running request', async () => {
         const host = makeHost(hang);
         const ctl = new AbortController();
-        const p = calculate(host, body, ctl.signal);
+        const p = calculate(host, request, ctl.signal);
         await vi.waitFor(() => expect(host.fetch).toHaveBeenCalled());
         ctl.abort();
         expect(await p).toEqual({ ok: false, error: { kind: 'cancelled' } });
@@ -223,19 +279,19 @@ describe('calculate: cancel and timeout', () => {
         const ctl = new AbortController();
         const res = { status: 200, headers: new Headers(), text: async () => { ctl.abort(); throw new DOMException('Aborted', 'AbortError'); } };
         const host = makeHost(async () => res as unknown as Response);
-        expect(await calculate(host, body, ctl.signal)).toEqual({ ok: false, error: { kind: 'cancelled' } });
+        expect(await calculate(host, request, ctl.signal)).toEqual({ ok: false, error: { kind: 'cancelled' } });
     });
     it('times out on its own', async () => {
         vi.useFakeTimers();
         const host = makeHost(hang);
-        const p = calculate(host, body, undefined, 80000);
+        const p = calculate(host, request, undefined, 80000);
         await vi.advanceTimersByTimeAsync(80001);
         expect(await p).toEqual({ ok: false, error: { kind: 'timeout' } });
     });
     it('does not leave a timer behind after an answer', async () => {
         vi.useFakeTimers();
         const host = makeHost(async () => jsonResponse(200, okBody()));
-        await calculate(host, body);
+        await calculate(host, request);
         expect(vi.getTimerCount()).toBe(0);
     });
 });

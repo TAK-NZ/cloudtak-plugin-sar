@@ -8,7 +8,7 @@ describe('describeError', () => {
         expect(describeError({ kind: 'failed' })).toBe('Analysis failed. Try again, or try a smaller area.');
         expect(describeError({ kind: 'network' })).toBe('Could not reach the server. Check your connection and try again.');
         expect(describeError({ kind: 'cancelled' })).toBe('Calculation cancelled.');
-        expect(describeError({ kind: 'invalid' })).toContain('not accepted');
+        expect(describeError({ kind: 'invalid' })).toBe('The values were not accepted. Check the start point and the settings.');
     });
     it('shows the wait of a rate limit', () => {
         expect(describeError({ kind: 'busy', retryAfterS: 12 })).toBe('Too many requests. Try again in 12 seconds.');

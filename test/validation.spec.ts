@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     isBandHours, isRadius, normalizeBands, parseNumber, validateBand, validateBands, validateForm, validateLat, validateLng,
-    validateRadius, validateSpeed, withLongestBand,
+    validateRadius, validateRun, validateSpeed, validateTarrForm, withLongestBand,
 } from '../lib/validation.ts';
 
 const ok = (r: { ok: boolean }): boolean => r.ok;
@@ -152,5 +152,55 @@ describe('validateForm', () => {
         const r = validateForm({ lat: '', lng: '0', speed: '0', bands: [], radius: '31' });
         expect(r.ok).toBe(false);
         if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['bands', 'lat', 'lng', 'radius', 'speed']);
+    });
+});
+
+describe('validateTarrForm', () => {
+    const good = { lat: '-40', lng: '172', profile: 'Hiker', ecoregion: '', terrain: '' };
+    it('builds the relay body and leaves empty ecoregion and terrain out', () => {
+        expect(validateTarrForm(good)).toEqual({ ok: true, body: { ipp: { lat: -40, lng: 172 }, profile: 'Hiker' } });
+        expect(validateTarrForm({ ...good, ecoregion: 'Temperate', terrain: 'Mountainous' })).toEqual({
+            ok: true,
+            body: { ipp: { lat: -40, lng: 172 }, profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous' },
+        });
+    });
+    it('needs a profile from the table', () => {
+        const none = validateTarrForm({ ...good, profile: '' });
+        expect(none.ok).toBe(false);
+        if (!none.ok) expect(none.errors.profile).toBe('Choose a subject profile.');
+        const unknown = validateTarrForm({ ...good, profile: 'Wizard' });
+        expect(unknown.ok).toBe(false);
+        if (!unknown.ok) expect(unknown.errors.profile).toContain('not available');
+    });
+    it('rejects an ecoregion or terrain the profile does not offer', () => {
+        const eco = validateTarrForm({ ...good, profile: 'Abduction', ecoregion: 'Dry' });
+        expect(!eco.ok && eco.errors.ecoregion).toBeTruthy();
+        const noEco = validateTarrForm({ ...good, terrain: 'Flat' });
+        expect(!noEco.ok && noEco.errors.terrain).toBeTruthy();
+        const terrain = validateTarrForm({ ...good, profile: 'Angler', ecoregion: 'Dry', terrain: 'Flat' });
+        expect(!terrain.ok && terrain.errors.terrain).toBeTruthy();
+    });
+    it('returns the start point errors with the profile error', () => {
+        const r = validateTarrForm({ ...good, lat: '', lng: '0', profile: '' });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['lat', 'lng', 'profile']);
+    });
+});
+
+describe('validateRun', () => {
+    const form = { lat: '-40', lng: '172', speed: '2.5', bands: [1, 2], radius: '', profile: 'Hiker', ecoregion: '', terrain: '' };
+    it('checks only the fields of the chosen mode', () => {
+        expect(validateRun('travel-time', { ...form, profile: '' })).toEqual({
+            ok: true,
+            request: { mode: 'travel-time', body: { ipp: { lat: -40, lng: 172 }, speed_kmh: 2.5, intervals_hours: [1, 2] } },
+        });
+        expect(validateRun('tarr', { ...form, speed: '', bands: [] })).toEqual({
+            ok: true,
+            request: { mode: 'tarr', body: { ipp: { lat: -40, lng: 172 }, profile: 'Hiker' } },
+        });
+    });
+    it('fails for the chosen mode only', () => {
+        expect(validateRun('travel-time', { ...form, speed: '' }).ok).toBe(false);
+        expect(validateRun('tarr', { ...form, profile: '' }).ok).toBe(false);
     });
 });
