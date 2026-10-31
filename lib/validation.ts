@@ -82,14 +82,15 @@ export function normalizeBands(bands: readonly number[]): number[] {
 }
 
 /**
- * Replace the longest band by `hours`, then collapse duplicates and sort. Returns null when
- * `hours` is not inside the band limits (the value is never clamped) or there is no band.
+ * Make `hours` the longest band: the largest band is replaced by `hours` and every other band
+ * above `hours` is dropped, so the largest result always equals `hours`. Bands below `hours`
+ * are kept. Returns null when `hours` is not inside the band limits (the value is never
+ * clamped) or there is no band.
  */
 export function withLongestBand(bands: readonly number[], hours: unknown): number[] | null {
     if (!isBandHours(hours) || bands.length === 0) return null;
-    const sorted = normalizeBands(bands);
-    sorted[sorted.length - 1] = hours;
-    return normalizeBands(sorted);
+    const kept = normalizeBands(bands).slice(0, -1).filter((b) => b < hours);
+    return [...kept, hours];
 }
 
 /** Checks every field and builds the relay body. All field errors are returned together. */

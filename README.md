@@ -31,7 +31,7 @@ Timing guide: a bush area with a 10 km radius usually takes a few seconds. Large
 ### Dense areas
 In dense city areas the engine can refuse a calculation instead of running until it times out. The panel then shows the engine's message word for word. Depending on what the engine suggests, it also offers:
 * **Try {n} km**, when the engine suggests a smaller radius. It fills the radius field.
-* **Set longest band to {h} h**, when the engine suggests a shorter longest band. It replaces the largest chip with that value, then removes duplicates and keeps the chips in order. If the engine suggested a radius as well, this button sets both the radius and the longest band.
+* **Set longest band to {h} h**, when the engine suggests a shorter longest band. It makes that value the longest band: the largest chip becomes that value and any chip above it is removed, so the longest band equals the number the engine gave. The plugin uses the engine's numbers as received and never rounds or clamps them. If the engine suggested a radius as well, this button sets both the radius and the longest band.
 The buttons only edit the inputs. Nothing is sent until you press **Run**. The plugin never makes up a suggestion: it uses the numbers in the response. A number that is not a finite number, or that is outside the plugin's own limits (radius 1 to 30 km, band 0.25 to 24 h), is ignored and never rounded into range; the message is still shown. When neither suggestion is usable there is no button. Other refusals, such as a start point in the sea, show their message and no button.
 ## Troubleshooting
 | Message | What to do |
@@ -44,7 +44,7 @@ The buttons only edit the inputs. Nothing is sent until you press **Run**. The p
 | Could not reach the server. Check your connection and try again. | Check the connection, then **Retry** |
 If the menu entry is missing, the relay is switched off or unreachable, and the plugin adds nothing to the app.
 ## Data and attribution
-The panel shows the attribution list from the engine whenever contours are visible. The data are:
+The panel shows the attribution list from the engine, and the same lines appear in the map's attribution control for as long as the contours are drawn, also when the panel is closed. The disclaimer is shown in the panel next to the result. The data are:
 * Land cover: LCDB v6.0, Landcare Research, CC BY 4.0
 * Elevation: LINZ NZ Elevation, CC BY 4.0, with Copernicus GLO-30
 * Roads and trails: OpenStreetMap contributors, ODbL, https://www.openstreetmap.org/copyright

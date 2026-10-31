@@ -379,7 +379,7 @@ describe('dense-area refusal (area_too_dense)', () => {
         await settle();
         expect(w.findAll('[data-test=error] button').map((b) => b.text())).toEqual(['Set longest band to 3 h']);
         await w.get('[data-test=suggest-hours]').trigger('click');
-        expect(w.findAll('[data-test=band]').map((b) => b.text())).toEqual(['1 h', '2 h', '3 h', '4 h']);
+        expect(w.findAll('[data-test=band]').map((b) => b.text())).toEqual(['1 h', '2 h', '3 h']);
         expect(form.radius).toBe('10');
     });
 
@@ -392,7 +392,7 @@ describe('dense-area refusal (area_too_dense)', () => {
         expect(w.get('[data-test=suggest-hours]').attributes('aria-describedby')).toBe('sar-suggest-both');
         await w.get('[data-test=suggest-hours]').trigger('click');
         expect(form.radius).toBe('6');
-        expect([...form.bands]).toEqual([1, 2, 3, 4]);
+        expect([...form.bands]).toEqual([1, 2, 3]);
     });
 
     it('neither: no button', async () => {

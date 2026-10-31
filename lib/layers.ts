@@ -22,6 +22,8 @@ export interface GeoJsonData {
 export interface GeoJsonSourceSpec {
     type: 'geojson';
     data: GeoJsonData;
+    /** Shown in the map's attribution control while the source is drawn. HTML, so the text is escaped. */
+    attribution?: string;
 }
 
 export interface LayerSpec {
@@ -50,6 +52,16 @@ export interface MapLike {
     fitBounds(bounds: [[number, number], [number, number]], options: FitOptions): unknown;
     on(type: string, listener: () => void): unknown;
     off(type: string, listener: () => void): unknown;
+}
+
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+/**
+ * The engine's attribution lines as one string for the map's attribution control, which renders
+ * HTML: every character that could start markup is escaped. Empty when there are no lines.
+ */
+export function attributionText(result: TravelTimeResult): string {
+    return result.attribution.map((line) => line.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c])).join(' | ');
 }
 
 /** Minimum time between two checks on `idle`. */
@@ -126,6 +138,7 @@ const reducedMotion = (): boolean => {
  */
 export class SarLayers {
     private result: TravelTimeResult | null = null;
+    private attributionUsed = '';
     private ipp: [number, number] | null = null;
     private listening = false;
     private disposed = false;
@@ -150,6 +163,10 @@ export class SarLayers {
     show(result: TravelTimeResult): void {
         if (this.disposed) return;
         this.result = result;
+        // A source keeps the attribution it was created with: re-create it when the text changes.
+        if (attributionText(result) !== this.attributionUsed) {
+            this.removeLayerAndSource([LAYER_FILL, LAYER_OUTLINE], SOURCE_CONTOURS);
+        }
         this.attach();
         this.ensure();
         this.setData(SOURCE_CONTOURS, { type: 'FeatureCollection', features: contourFeatures(result) });
@@ -194,7 +211,7 @@ export class SarLayers {
         if (!style) return;
         const anchor = markerAnchor(style);
         if (this.result) {
-            this.ensureSource(SOURCE_CONTOURS, { type: 'FeatureCollection', features: contourFeatures(this.result) });
+            this.ensureSource(SOURCE_CONTOURS, { type: 'FeatureCollection', features: contourFeatures(this.result) }, attributionText(this.result));
             this.ensureSource(SOURCE_LABELS, { type: 'FeatureCollection', features: labelPoints(this.result) });
             for (const spec of layerSpecs()) {
                 if (spec.id !== LAYER_IPP) this.ensureLayer(spec, anchor);
@@ -217,8 +234,10 @@ export class SarLayers {
         return this.listening;
     }
 
-    private ensureSource(id: string, data: GeoJsonData): void {
-        if (!this.map.getSource(id)) this.map.addSource(id, { type: 'geojson', data });
+    private ensureSource(id: string, data: GeoJsonData, attribution = ''): void {
+        if (this.map.getSource(id)) return;
+        this.map.addSource(id, attribution ? { type: 'geojson', data, attribution } : { type: 'geojson', data });
+        if (id === SOURCE_CONTOURS) this.attributionUsed = attribution;
     }
 
     private ensureLayer(spec: LayerSpec, anchor: string | undefined): void {

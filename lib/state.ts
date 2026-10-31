@@ -2,7 +2,7 @@ import { reactive, watch } from 'vue';
 import type { WatchHandle } from 'vue';
 import { BANDS_MAX, CODE_AREA_TOO_DENSE, DEFAULT_BANDS, DEFAULT_RADIUS, DEFAULT_SPEED, STORAGE_KEY } from './constants.ts';
 import { describeError } from './errors.ts';
-import { formatHours, formatKm } from './format.ts';
+import { formatKm } from './format.ts';
 import type { CalcError, TravelTimeResult } from './types.ts';
 import { isBandHours, isRadius, normalizeBands, validateBand, validateBands, validateRadius, validateSpeed, withLongestBand } from './validation.ts';
 
@@ -267,15 +267,15 @@ export function suggestionButtons(error: CalcError | null): SuggestionButton[] {
     const out: SuggestionButton[] = [];
     if (radius !== undefined) out.push({ kind: 'radius', label: `Try ${formatKm(radius)} km` });
     if (hours !== undefined) {
-        out.push({ kind: 'hours', label: `Set longest band to ${formatHours(hours)}`, ...(radius !== undefined ? { alsoRadiusKm: radius } : {}) });
+        out.push({ kind: 'hours', label: `Set longest band to ${hours} h`, ...(radius !== undefined ? { alsoRadiusKm: radius } : {}) });
     }
     return out;
 }
 
 /**
  * Put a suggestion into the inputs. This only edits the form: nothing is sent and the user
- * presses Run. The radius button sets the radius; the longest-band button replaces the largest
- * band (and sets the radius too when the engine suggested one).
+ * presses Run. The radius button sets the radius; the longest-band button makes the suggested
+ * value the longest band (and sets the radius too when the engine suggested one).
  */
 export function applySuggestion(button: SuggestionButton): void {
     const error = session.error;
@@ -294,8 +294,8 @@ export function applySuggestion(button: SuggestionButton): void {
     const radius = error.suggestions.radiusKm;
     if (isRadius(radius)) {
         form.radius = formatKm(radius);
-        announce(`Longest band set to ${formatHours(hours)} and radius set to ${formatKm(radius)} km. Press Run to calculate again.`);
+        announce(`Longest band set to ${hours} h and radius set to ${formatKm(radius)} km. Press Run to calculate again.`);
     } else {
-        announce(`Longest band set to ${formatHours(hours)}. Press Run to calculate again.`);
+        announce(`Longest band set to ${hours} h. Press Run to calculate again.`);
     }
 }

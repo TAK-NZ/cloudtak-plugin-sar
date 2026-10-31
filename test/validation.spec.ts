@@ -108,12 +108,24 @@ describe('radius', () => {
 });
 
 describe('withLongestBand', () => {
-    it('replaces the largest band, then sorts and collapses', () => {
-        expect(withLongestBand([1, 2, 4, 8], 3)).toEqual([1, 2, 3, 4]);
+    it('replaces the largest band and drops every band above the suggestion', () => {
+        expect(withLongestBand([1, 2, 4, 8], 3)).toEqual([1, 2, 3]);
         expect(withLongestBand([8, 1, 4, 2], 6)).toEqual([1, 2, 4, 6]);
-        expect(withLongestBand([1, 2, 4, 8], 2)).toEqual([1, 2, 4]);
+        expect(withLongestBand([1, 2, 4, 8], 2)).toEqual([1, 2]);
         expect(withLongestBand([1, 2, 4, 8], 12)).toEqual([1, 2, 4, 12]);
+        expect(withLongestBand([1, 2, 4, 8], 0.5)).toEqual([0.5]);
         expect(withLongestBand([5], 3)).toEqual([3]);
+    });
+    it('always makes the longest band equal to the suggestion', () => {
+        for (const h of [0.25, 0.5, 1, 1.5, 2, 3, 4, 7.9, 8, 9, 24]) {
+            const bands = withLongestBand([1, 2, 4, 8], h) as number[];
+            expect(Math.max(...bands)).toBe(h);
+            expect(bands).toEqual([...bands].sort((a, b) => a - b));
+            expect(new Set(bands).size).toBe(bands.length);
+        }
+    });
+    it('uses a fractional suggestion unchanged', () => {
+        expect(withLongestBand([1, 2, 4, 8], 3.333)).toEqual([1, 2, 3.333]);
     });
     it('does not clamp: a value outside the limits gives null', () => {
         expect(withLongestBand([1, 2], 25)).toBeNull();

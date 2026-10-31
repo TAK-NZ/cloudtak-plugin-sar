@@ -362,6 +362,16 @@ describe('a calculation', () => {
         expect(session.announcement).toBe('Calculation finished. 3 contours drawn.');
     });
 
+    it('keeps the engine attribution on the map while contours stay visible with the panel closed', async () => {
+        const ctx = await enabled();
+        launch(ctx);
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(ctx.bar.has('taknz-sar')).toBe(false);
+        expect(ours(ctx.map)).toContain('taknz-sar-fill');
+        const spec = ctx.map.getSource('taknz-sar-contours')?.spec as { attribution?: string };
+        expect(spec.attribution).toBe('Synthetic attribution one | Synthetic attribution two');
+    });
     it('does nothing for an invalid form', async () => {
         await enabled();
         form.lat = '-10';
@@ -522,7 +532,7 @@ describe('errors from the relay', () => {
         expect(buttons.map((b) => b.label)).toEqual(['Try 6 km', 'Set longest band to 3 h']);
         applySuggestion(buttons[1]);
         expect(form.radius).toBe('6');
-        expect([...form.bands]).toEqual([1, 2, 3, 4]);
+        expect([...form.bands]).toEqual([1, 2, 3]);
     });
 
     it('area_too_dense with neither: the message and no button', async () => {
@@ -573,13 +583,13 @@ describe('errors from the relay', () => {
         expect(host.fetch.mock.calls.length).toBe(fetches);
         expect(session.run).toBe('error');
         expect(form.radius).toBe('6');
-        expect([...form.bands]).toEqual([1, 2, 3, 4]);
+        expect([...form.bands]).toEqual([1, 2, 3]);
         // The user presses Run: one new request with the edited values.
         calcReply = () => Promise.resolve(jsonResponse(200, okBody()));
         controller.run();
         await flushPromises();
         expect(calcCalls()).toHaveLength(2);
-        expect(JSON.parse((calcCalls()[1][1] as RequestInit).body as string)).toMatchObject({ radius_km: 6, intervals_hours: [1, 2, 3, 4] });
+        expect(JSON.parse((calcCalls()[1][1] as RequestInit).body as string)).toMatchObject({ radius_km: 6, intervals_hours: [1, 2, 3] });
     });
 
     it('moves focus to the button and announces the message in the panel (end to end)', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { IDLE_THROTTLE_MS, markerAnchor, SarLayers } from '../lib/layers.ts';
+import { attributionText, IDLE_THROTTLE_MS, markerAnchor, SarLayers } from '../lib/layers.ts';
 import { parseResult } from '../lib/result.ts';
 import { FakeMap } from './fake-map.ts';
 import { feature, okBody } from './fixtures.ts';
@@ -104,6 +104,34 @@ describe('SarLayers.show', () => {
     });
 });
 
+describe('attribution on the map', () => {
+    const attribution = (m: FakeMap): unknown => (m.getSource('taknz-sar-contours')?.spec as { attribution?: string }).attribution;
+    it('puts the engine attribution on the contours source, so the map shows it while contours are visible', () => {
+        const map = new FakeMap();
+        new SarLayers(map).show(result());
+        expect(attribution(map)).toBe('Synthetic attribution one | Synthetic attribution two');
+    });
+    it('escapes markup in the attribution lines', () => {
+        const r = { ...result(), attribution: ['A & B <b>"x"</b>'] };
+        expect(attributionText(r)).toBe('A &amp; B &lt;b&gt;&quot;x&quot;&lt;/b&gt;');
+    });
+    it('leaves the key out when there are no attribution lines', () => {
+        const map = new FakeMap();
+        new SarLayers(map).show({ ...result(), attribution: [] });
+        expect('attribution' in (map.getSource('taknz-sar-contours')!.spec as object)).toBe(false);
+    });
+    it('keeps it after a style reload and replaces it when a new result has different lines', () => {
+        const map = new FakeMap();
+        const layers = new SarLayers(map);
+        layers.show(result());
+        map.reloadStyle('taknz-sar-');
+        map.emit('style.load');
+        expect(attribution(map)).toBe('Synthetic attribution one | Synthetic attribution two');
+        layers.show({ ...result(), attribution: ['Synthetic attribution three'] });
+        expect(attribution(map)).toBe('Synthetic attribution three');
+        expect(ours(map)).toEqual(['taknz-sar-fill', 'taknz-sar-outline', 'taknz-sar-label']);
+    });
+});
 describe('SarLayers.setIpp', () => {
     it('adds the start point on top of the contours, whatever the order of calls', () => {
         const a = new FakeMap();

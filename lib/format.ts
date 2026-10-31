@@ -20,7 +20,7 @@ export function formatBuilt(builtAt: string | null | undefined): string | null {
     return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/** Kilometres without trailing zeros: `10` -> `10`, `12.5` -> `12.5`. */
+/** A kilometre value as the number itself, never rounded: `10` -> `10`, `6.25` -> `6.25`. */
 export function formatKm(km: number): string {
-    return String(Number(km.toFixed(1)));
+    return String(km);
 }

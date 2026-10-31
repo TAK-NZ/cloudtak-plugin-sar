@@ -114,9 +114,9 @@ describe('format', () => {
         expect(formatBuilt('')).toBeNull();
         expect(formatBuilt('not a date')).toBeNull();
     });
-    it('formats kilometres', () => {
+    it('formats kilometres without rounding', () => {
         expect(formatKm(10)).toBe('10');
         expect(formatKm(12.5)).toBe('12.5');
-        expect(formatKm(7.25)).toBe('7.3');
+        expect(formatKm(7.25)).toBe('7.25');
     });
 });

@@ -239,17 +239,35 @@ describe('applying a suggestion only edits the inputs', () => {
         expect(session.announcement).toContain('Press Run');
     });
 
-    it('hours only: replaces the largest band, then sorts and dedupes', () => {
+    it('hours only: the longest band becomes the suggestion and longer bands are dropped', () => {
         failRun(dense({ maxHours: 3 }));
         applySuggestion(suggestionButtons(session.error)[0]);
-        expect([...form.bands]).toEqual([1, 2, 3, 4]);
+        expect([...form.bands]).toEqual([1, 2, 3]);
+        expect(Math.max(...form.bands)).toBe(3);
         expect(form.radius).toBe('10');
+    });
+
+    it('hours: a value below the second-longest band drops every longer band', () => {
+        failRun(dense({ maxHours: 1.5 }));
+        applySuggestion(suggestionButtons(session.error)[0]);
+        expect([...form.bands]).toEqual([1, 1.5]);
+        expect(Math.max(...form.bands)).toBe(1.5);
     });
 
     it('hours: a value equal to another band collapses into it', () => {
         failRun(dense({ maxHours: 2 }));
         applySuggestion(suggestionButtons(session.error)[0]);
-        expect([...form.bands]).toEqual([1, 2, 4]);
+        expect([...form.bands]).toEqual([1, 2]);
+        expect(Math.max(...form.bands)).toBe(2);
+    });
+
+    it('fractional suggestions are used as received, never rounded', () => {
+        failRun(dense({ radiusKm: 6.25, maxHours: 3.333 }));
+        const buttons = suggestionButtons(session.error);
+        expect(buttons.map((b) => b.label)).toEqual(['Try 6.25 km', 'Set longest band to 3.333 h']);
+        applySuggestion(buttons[1]);
+        expect(form.radius).toBe('6.25');
+        expect([...form.bands]).toEqual([1, 2, 3.333]);
     });
 
     it('hours can also raise the longest band', () => {
@@ -263,7 +281,7 @@ describe('applying a suggestion only edits the inputs', () => {
         failRun(dense({ radiusKm: 6, maxHours: 3 }));
         applySuggestion(suggestionButtons(session.error)[1]);
         expect(form.radius).toBe('6');
-        expect([...form.bands]).toEqual([1, 2, 3, 4]);
+        expect([...form.bands]).toEqual([1, 2, 3]);
     });
 
     it('with no bands left the suggested value becomes the only band', () => {
