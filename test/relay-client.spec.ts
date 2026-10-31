@@ -104,7 +104,7 @@ describe('calculate: errors', () => {
         expect(await kindOf(jsonResponse(413, { message: 'x' }))).toMatchObject({ kind: 'invalid', status: 413 });
     });
     it('maps 429 to busy with Retry-After', async () => {
-        expect(await kindOf(jsonResponse(429, { message: 'x' }, { 'Retry-After': '17' }))).toEqual({ kind: 'busy', status: 429, retryAfterS: 17 });
+        expect(await kindOf(jsonResponse(429, { message: 'x' }, { 'Retry-After': '21' }))).toEqual({ kind: 'busy', status: 429, retryAfterS: 21 });
         expect(await kindOf(jsonResponse(429, { message: 'x' }))).toEqual({ kind: 'busy', status: 429, retryAfterS: undefined });
         expect(await kindOf(jsonResponse(429, {}, { 'Retry-After': 'soon' }))).toMatchObject({ kind: 'busy', retryAfterS: undefined });
         expect(await kindOf(jsonResponse(429, {}, { 'Retry-After': '0' }))).toMatchObject({ retryAfterS: undefined });
