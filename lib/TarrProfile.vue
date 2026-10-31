@@ -2,7 +2,7 @@
     <div data-test='tarr-profile'>
         <div class='mb-2'>
             <label
-                class='form-label mb-1'
+                class='d-block px-2 my-1 user-select-none'
                 for='sar-profile'
             >Subject profile</label>
             <select
@@ -10,7 +10,6 @@
                 class='form-select'
                 style='font-size: 16px; min-height: 44px;'
                 :value='form.profile'
-                aria-describedby='sar-profile-help'
                 data-test='profile'
                 @change='setProfile(($event.target as HTMLSelectElement).value)'
             >
@@ -24,18 +23,13 @@
                     v-text='name'
                 />
             </select>
-            <div
-                id='sar-profile-help'
-                class='form-hint small text-secondary mt-1'
-                v-text='HINT_PROFILE'
-            />
         </div>
         <div
             v-if='ecoregions.length'
             class='mb-2'
         >
             <label
-                class='form-label mb-1'
+                class='d-block px-2 my-1 user-select-none'
                 for='sar-ecoregion'
             >Ecoregion</label>
             <select
@@ -62,7 +56,7 @@
             class='mb-2'
         >
             <label
-                class='form-label mb-1'
+                class='d-block px-2 my-1 user-select-none'
                 for='sar-terrain'
             >Terrain</label>
             <select
@@ -84,39 +78,78 @@
                 />
             </select>
         </div>
+        <div>
+            <div class='d-flex align-items-center'>
+                <label
+                    class='flex-grow-1 d-flex align-items-center px-2 user-select-none'
+                    style='min-height: 44px;'
+                    for='sar-plain-circles'
+                >Also draw plain circles</label>
+                <span class='form-switch ms-auto'>
+                    <input
+                        id='sar-plain-circles'
+                        type='checkbox'
+                        role='switch'
+                        class='form-check-input'
+                        :checked='form.plainCircles'
+                        aria-describedby='sar-plain-circles-help'
+                        data-test='plain-circles'
+                        @change='setPlainCircles(($event.target as HTMLInputElement).checked)'
+                    >
+                </span>
+            </div>
+            <div
+                id='sar-plain-circles-help'
+                class='form-hint small text-secondary px-2'
+                v-text='HINT_PLAIN_CIRCLES'
+            />
+        </div>
         <p
             v-if='distances'
-            class='mb-1'
+            class='mb-1 px-2'
             data-test='koester-distances'
         >
             Koester distances for this choice: 25%: {{ distances[0] }} km, 50%: {{ distances[1] }} km, 75%: {{ distances[2] }} km
         </p>
         <p
-            class='small text-secondary mb-1'
-            data-test='koester-source'
+            class='small fw-bold mb-2 px-2'
+            data-test='tarr-not-calibrated'
+            v-text='TARR_NOT_CALIBRATED'
+        />
+        <InfoBox
+            id='tarr-about'
+            label='About these numbers'
+            :icon='IconInfoCircle'
         >
-            Source: <span v-text='KOESTER_SOURCE' />
-        </p>
-        <p
-            class='small mb-1'
-            data-test='tarr-notice-calibration'
-            v-text='TARR_NOTICE_CALIBRATION'
-        />
-        <p
-            class='small mb-1'
-            data-test='tarr-notice-percent'
-            v-text='TARR_NOTICE_PERCENT'
-        />
-        <p
-            class='small text-secondary mb-0'
-            v-text='HINT_TARR_RADIUS'
-        />
+            <p
+                class='mb-1'
+                data-test='koester-source'
+            >
+                Source: <span v-text='KOESTER_SOURCE' />
+            </p>
+            <p
+                class='mb-1'
+                data-test='tarr-notice-calibration'
+                v-text='TARR_NOTICE_CALIBRATION'
+            />
+            <p
+                class='mb-1'
+                data-test='tarr-notice-percent'
+                v-text='TARR_NOTICE_PERCENT'
+            />
+            <p
+                class='text-secondary mb-0'
+                v-text='HINT_TARR_RADIUS'
+            />
+        </InfoBox>
     </div>
 </template>
 <script setup lang='ts'>
 import { computed } from 'vue';
-import { HINT_PROFILE, HINT_TARR_RADIUS, TARR_NOTICE_CALIBRATION, TARR_NOTICE_PERCENT } from './copy.ts';
-import { form, setEcoregion, setProfile, setTerrain } from './state.ts';
+import { IconInfoCircle } from '@tabler/icons-vue';
+import InfoBox from './InfoBox.vue';
+import { HINT_PLAIN_CIRCLES, HINT_TARR_RADIUS, TARR_NOT_CALIBRATED, TARR_NOTICE_CALIBRATION, TARR_NOTICE_PERCENT } from './copy.ts';
+import { form, setEcoregion, setPlainCircles, setProfile, setTerrain } from './state.ts';
 import { KOESTER_SOURCE, distancesFor, ecoregionsOf, profileNames, terrainsOf } from './tarr-profiles.ts';
 const names = profileNames();
 const ecoregions = computed(() => (form.profile ? ecoregionsOf(form.profile) : []));

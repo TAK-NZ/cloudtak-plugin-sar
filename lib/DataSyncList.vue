@@ -4,22 +4,23 @@
 -->
 <template>
     <div>
-        <p
+        <div
             v-if='loading'
-            class='mb-0'
             role='status'
             data-test='sync-loading'
         >
-            Loading Data Syncs...
-        </p>
-        <p
+            <TablerLoading
+                inline
+                desc='Loading Data Syncs...'
+            />
+        </div>
+        <TablerInlineAlert
             v-else-if='error'
-            class='mb-0 text-danger'
-            role='alert'
+            severity='danger'
+            title='Error'
+            :description='`Could not load Data Syncs. ${error}`'
             data-test='sync-error'
-        >
-            <span class='fw-bold'>Error:</span> Could not load Data Syncs. <span v-text='error' />
-        </p>
+        />
         <p
             v-else-if='!missions.length'
             class='mb-0'
@@ -69,6 +70,7 @@
 <script setup lang='ts'>
 import { onMounted, ref } from 'vue';
 import { IconCheck, IconCloudPin } from '@tabler/icons-vue';
+import { TablerInlineAlert, TablerLoading } from '@tak-ps/vue-tabler';
 import { NO_DATA_SYNCS } from './copy.ts';
 import { listSubscribedMissions } from './missions.ts';
 import type { MissionChoice } from './types.ts';

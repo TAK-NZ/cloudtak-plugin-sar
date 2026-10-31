@@ -33,10 +33,14 @@ describe('travel time features', () => {
         expect(f.path).toBe('/SAR/');
         expect(f.properties).toMatchObject({
             id: 'id-1', type: 'u-d-f', how: 'h-g-i-g-o', archived: true,
-            stroke: '#ff0000', 'stroke-width': 3, 'stroke-opacity': 1, 'stroke-style': 'solid', fill: '#ff0000', 'fill-opacity': 0.15,
+            stroke: '#fbc02d', 'stroke-width': 3, 'stroke-opacity': 1, 'stroke-style': 'solid', fill: '#fbc02d', 'fill-opacity': 0.15,
             time: '2026-03-01T12:00:00.000Z', start: '2026-03-01T12:00:00.000Z', stale: '2026-03-02T12:00:00.000Z',
         });
         expect(prop(f, 'center')).toEqual([expect.any(Number), expect.any(Number)]);
+    });
+    it('fills the travel time bands like the terrain-adjusted TARR rings', () => {
+        for (const f of features.slice(0, 3)) expect(f.properties['fill-opacity']).toBe(0.15);
+        expect(features[3].properties['fill-opacity']).toBeUndefined();
     });
 
     it('writes remarks with the speed, the bands, the start point, the run time, the reach sentence and the disclaimer', () => {
@@ -71,9 +75,12 @@ describe('travel time features', () => {
         expect(build(r, travelMeta).map((f) => f.properties.callsign)).toEqual(['SAR 2.5 h', 'SAR 0.25 h', 'SAR IPP']);
     });
 
-    it('falls back to the colour constant for a contour without a usable colour', () => {
-        const r = travel({ contours: { type: 'FeatureCollection', features: [feature(1, { color: 'red' })] } });
-        expect(build(r, travelMeta)[0].properties.stroke).toBe('#3388ff');
+    it('uses the plugin colours for the bands, not the colour the engine sent', () => {
+        const r = travel({ contours: { type: 'FeatureCollection', features: [feature(1, { color: '#00bcd4' }), feature(2, { color: '#4caf50' })] } });
+        const f = build(r, travelMeta);
+        expect(f.map((x) => [x.properties.callsign, x.properties.stroke, x.properties.fill])).toEqual([
+            ['SAR 2 h', '#f57c00', '#f57c00'], ['SAR 1 h', '#d32f2f', '#d32f2f'], ['SAR IPP', undefined, undefined],
+        ]);
     });
 });
 

@@ -1,4 +1,4 @@
-import { FALLBACK_COLOR } from './constants.ts';
+import { BAND_COLORS, FALLBACK_COLOR } from './constants.ts';
 import type {
     AnalysisResult, Bbox, ContourFeature, PolygonGeometry, Position, ResultBase, ResultWarning, RingFeature, TarrCalibration, TarrResult,
     TravelTimeResult, Triple,
@@ -29,7 +29,8 @@ function parseFeature(raw: unknown): ContourFeature | null {
     if (!isNum(p.hours) || p.hours <= 0) return null;
     const properties: ContourFeature['properties'] = {
         hours: p.hours,
-        color: typeof p.color === 'string' && HEX.test(p.color) ? p.color : FALLBACK_COLOR,
+        // The engine's colour is not used: see BAND_COLORS. applyBandColors sets the real one.
+        color: FALLBACK_COLOR,
     };
     if (isNum(p.label_lat) && isNum(p.label_lng)) {
         properties.label_lat = p.label_lat;
@@ -38,6 +39,14 @@ function parseFeature(raw: unknown): ContourFeature | null {
     return { type: 'Feature', geometry, properties };
 }
 
+/** Colour the bands by rank, smallest first, so the inner band is always the first colour of BAND_COLORS. */
+function applyBandColors(contours: ContourFeature[]): ContourFeature[] {
+    const ranked = [...contours].sort((a, b) => a.properties.hours - b.properties.hours);
+    ranked.forEach((contour, i) => {
+        contour.properties.color = BAND_COLORS[i % BAND_COLORS.length];
+    });
+    return contours;
+}
 function parseBbox(raw: unknown): Bbox | null {
     if (!isObject(raw) || !isNum(raw.west) || !isNum(raw.south) || !isNum(raw.east) || !isNum(raw.north)) return null;
     if (raw.west >= raw.east || raw.south >= raw.north) return null;
@@ -145,7 +154,7 @@ export function parseResult(raw: unknown, expected: 'travel-time' | 'tarr' = 'tr
     const result: TravelTimeResult = {
         mode: 'travel-time',
         ...base,
-        contours: list.map(parseFeature).filter((f): f is ContourFeature => f !== null),
+        contours: applyBandColors(list.map(parseFeature).filter((f): f is ContourFeature => f !== null)),
         parameters: {
             speed_kmh: isNum(params.speed_kmh) ? params.speed_kmh : null,
             radius_km: isNum(params.radius_km) ? params.radius_km : null,
@@ -157,4 +166,21 @@ export function parseResult(raw: unknown, expected: 'travel-time' | 'tarr' = 'tr
 
 export function ippPoint(lng: number, lat: number): { type: 'Feature'; geometry: { type: 'Point'; coordinates: Position }; properties: Record<string, never> } {
     return { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: {} };
+}
+
+/**
+ * A TARR result without the plain circles. A plain circle whose percentage then has no ring at all
+ * (the terrain ring was missing) is announced with a note, so the gap is not silent.
+ */
+export function withoutPlainCircles(result: TarrResult): TarrResult {
+    const kept = result.rings.filter((ring) => ring.kind === 'terrain');
+    if (kept.length === result.rings.length) return result;
+    const shown = new Set(kept.map((ring) => ring.percent));
+    const gaps = [...new Set(result.rings.filter((ring) => ring.kind === 'plain' && !shown.has(ring.percent)).map((ring) => ring.percent))].sort((a, b) => a - b);
+    const notes: ResultWarning[] = gaps.map((percent) => ({
+        severity: 'info',
+        source: 'plugin',
+        message: `No terrain ring for ${percent}%. Its plain circle is hidden because plain circles are switched off.`,
+    }));
+    return { ...result, rings: kept, warnings: [...result.warnings, ...notes] };
 }

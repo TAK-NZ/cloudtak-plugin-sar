@@ -1,21 +1,48 @@
 <template>
-    <section
+    <Section
         v-if='session.result'
-        aria-label='Share the result'
+        id='share'
+        label='Save and share'
+        :icon='IconShare'
+        tag='div'
         data-test='share'
     >
-        <h3 class='h4'>
-            Share the result
-        </h3>
-        <p
-            class='small mb-2'
-            data-test='share-hint'
-            v-text='SHARE_HINT'
-        />
-        <div class='d-flex flex-wrap gap-2'>
-            <button
+        <div class='d-flex flex-column gap-2'>
+            <TablerButton
                 type='button'
-                class='btn btn-outline-secondary d-inline-flex align-items-center gap-1'
+                class='btn-primary w-100 d-inline-flex align-items-center justify-content-center'
+                style='min-height: 44px; min-width: 44px;'
+                :disabled='busy'
+                data-test='save-files'
+                @click='controller.saveToFiles()'
+            >
+                <IconDeviceFloppy
+                    :size='20'
+                    stroke='1'
+                    class='me-2'
+                    aria-hidden='true'
+                />
+                Save to Files
+            </TablerButton>
+            <TablerButton
+                v-if='session.share.saved'
+                type='button'
+                class='btn-outline-primary w-100 d-inline-flex align-items-center justify-content-center'
+                style='min-height: 44px; min-width: 44px;'
+                data-test='open-files'
+                @click='controller.openFiles()'
+            >
+                <IconFiles
+                    :size='20'
+                    stroke='1'
+                    class='me-2'
+                    aria-hidden='true'
+                />
+                Open Files
+            </TablerButton>
+            <TablerButton
+                type='button'
+                class='btn-outline-primary w-100 d-inline-flex align-items-center justify-content-center'
                 style='min-height: 44px; min-width: 44px;'
                 :disabled='busy'
                 data-test='add-to-sync'
@@ -23,14 +50,15 @@
             >
                 <IconCloudPin
                     :size='20'
-                    stroke='1.5'
+                    stroke='1'
+                    class='me-2'
                     aria-hidden='true'
                 />
-                <span>Add to Data Sync</span>
-            </button>
-            <button
+                Add to Data Sync
+            </TablerButton>
+            <TablerButton
                 type='button'
-                class='btn btn-outline-secondary d-inline-flex align-items-center gap-1'
+                class='btn-outline-primary w-100 d-inline-flex align-items-center justify-content-center'
                 style='min-height: 44px; min-width: 44px;'
                 :disabled='busy'
                 data-test='create-package'
@@ -38,56 +66,55 @@
             >
                 <IconPackage
                     :size='20'
-                    stroke='1.5'
+                    stroke='1'
+                    class='me-2'
                     aria-hidden='true'
                 />
-                <span>Create data package</span>
-            </button>
-            <button
-                type='button'
-                class='btn btn-outline-secondary d-inline-flex align-items-center gap-1'
-                style='min-height: 44px; min-width: 44px;'
-                :disabled='busy'
-                data-test='download-files'
-                @click='controller.exportFiles()'
-            >
-                <IconDownload
-                    :size='20'
-                    stroke='1.5'
-                    aria-hidden='true'
-                />
-                <span>Download KML and GeoJSON</span>
-            </button>
+                Create data package
+            </TablerButton>
         </div>
-        <p
-            class='small text-secondary mt-2 mb-0'
-            v-text='SHARE_HOLES'
-        />
-        <p
+        <div
             v-if='busy'
-            class='mt-2 mb-0'
             role='status'
             data-test='share-busy'
         >
-            <span
-                class='spinner-border spinner-border-sm me-1'
-                aria-hidden='true'
+            <TablerLoading
+                :desc='session.share.status || "Working..."'
+                data-test='share-status'
             />
-            Working...
-        </p>
-        <p
+        </div>
+        <TablerInlineAlert
             v-if='session.share.message && !busy'
-            class='mt-2 mb-0'
+            severity='success'
+            :title='session.share.message'
             data-test='share-message'
-            v-text='session.share.message'
         />
-        <p
+        <TablerInlineAlert
             v-if='session.share.error && !busy'
-            class='mt-2 mb-0 text-danger'
+            severity='danger'
+            title='Error'
+            :description='session.share.error'
             data-test='share-error'
+        />
+        <InfoBox
+            id='share-about'
+            label='About saving and sharing'
         >
-            <span class='fw-bold'>Error:</span> <span v-text='session.share.error' />
-        </p>
+            <p
+                class='mb-1'
+                data-test='share-files-hint'
+                v-text='SHARE_FILES_HINT'
+            />
+            <p
+                class='mb-1'
+                data-test='share-hint'
+                v-text='SHARE_HINT'
+            />
+            <p
+                class='mb-0'
+                v-text='SHARE_HOLES'
+            />
+        </InfoBox>
         <DataSyncPicker
             v-if='picker'
             @close='picker = false'
@@ -98,14 +125,17 @@
             @close='packaging = false'
             @confirm='makePackage'
         />
-    </section>
+    </Section>
 </template>
 <script setup lang='ts'>
 import { computed, ref } from 'vue';
-import { IconCloudPin, IconDownload, IconPackage } from '@tabler/icons-vue';
+import { IconCloudPin, IconDeviceFloppy, IconFiles, IconPackage, IconShare } from '@tabler/icons-vue';
+import { TablerButton, TablerInlineAlert, TablerLoading } from '@tak-ps/vue-tabler';
+import Section from './Section.vue';
+import InfoBox from './InfoBox.vue';
 import DataSyncPicker from './DataSyncPicker.vue';
 import PackageModal from './PackageModal.vue';
-import { SHARE_HINT, SHARE_HOLES } from './copy.ts';
+import { SHARE_FILES_HINT, SHARE_HINT, SHARE_HOLES } from './copy.ts';
 import { controller, session } from './state.ts';
 import type { MissionChoice } from './types.ts';
 const picker = ref(false);

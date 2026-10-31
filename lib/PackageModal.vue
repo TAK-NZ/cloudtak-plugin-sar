@@ -23,28 +23,18 @@
             </div>
         </div>
         <div class='modal-body text-body'>
-            <label
-                class='form-label mb-1'
-                for='sar-package-name'
-            >Package name</label>
-            <input
+            <FieldInput
                 id='sar-package-name'
                 v-model='name'
-                type='text'
-                autocomplete='off'
+                class='mb-3'
+                label='Package name'
+                inputmode='text'
                 maxlength='100'
-                class='form-control mb-1'
-                style='font-size: 16px; min-height: 44px; min-width: 0;'
-                :aria-invalid='name.trim() === "" ? "true" : undefined'
-                aria-describedby='sar-package-help'
+                hint='The package is private to you and downloads as a zip of CoT files. It can also be filed in Data Syncs below.'
+                hint-id='sar-package-help'
+                :error='name.trim() === "" ? "Enter a name." : ""'
                 data-test='package-name'
-            >
-            <p
-                id='sar-package-help'
-                class='small text-secondary mb-3'
-            >
-                The package is private to you and downloads as a zip of CoT files. It can also be filed in Data Syncs below.
-            </p>
+            />
             <h3 class='h4 mb-1'>
                 Also add to a Data Sync (optional)
             </h3>
@@ -74,6 +64,7 @@
 </template>
 <script setup lang='ts'>
 import { ref } from 'vue';
+import FieldInput from './FieldInput.vue';
 import { TablerButton, TablerModal } from '@tak-ps/vue-tabler';
 import { IconPackage } from '@tabler/icons-vue';
 import DataSyncList from './DataSyncList.vue';

@@ -67,7 +67,7 @@ export async function addToDataSync(
     return done;
 }
 
-async function request(host: Host, path: string, init: RequestInit): Promise<Response> {
+export async function request(host: Host, path: string, init: RequestInit): Promise<Response> {
     let token: string | undefined;
     try {
         token = (await host.token()) || undefined;

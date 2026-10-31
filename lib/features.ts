@@ -91,6 +91,11 @@ interface PolygonSpec {
     remarks: string;
     color: string;
     dashed: boolean;
+    /**
+     * 0 for the dashed plain circles. CloudTAK puts the label of a filled polygon inside the area and the
+     * label of an unfilled one along its outline.
+     */
+    fillOpacity: number;
     geometry: PolygonGeometry;
 }
 
@@ -101,6 +106,7 @@ function specs(result: AnalysisResult, meta: RunMeta): PolygonSpec[] {
             remarks: tarrRemarks(ring, result, meta),
             color: ring.color,
             dashed: ring.kind === 'plain',
+            fillOpacity: ring.kind === 'plain' ? 0 : RING_FILL_OPACITY,
             geometry: ring.geometry,
         }));
     }
@@ -112,6 +118,7 @@ function specs(result: AnalysisResult, meta: RunMeta): PolygonSpec[] {
             remarks: travelRemarks(f.properties.hours, result, meta),
             color: f.properties.color,
             dashed: false,
+            fillOpacity: RING_FILL_OPACITY,
             geometry: f.geometry,
         }));
 }
@@ -147,7 +154,7 @@ export function buildFeatures(result: AnalysisResult, meta: RunMeta, newId: () =
                     'stroke-opacity': 1,
                     'stroke-style': spec.dashed ? 'dashed' : 'solid',
                     fill: spec.color,
-                    'fill-opacity': spec.dashed ? 0 : RING_FILL_OPACITY,
+                    'fill-opacity': spec.fillOpacity,
                 },
                 geometry,
             });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ippPoint, parseResult } from '../lib/result.ts';
+import { BAND_COLORS } from '../lib/constants.ts';
+import { ippPoint, parseResult, withoutPlainCircles } from '../lib/result.ts';
 import type { TarrResult, TravelTimeResult } from '../lib/types.ts';
 import { formatBuilt, formatElapsed, formatHours, formatKm, formatStamp, formatUtc } from '../lib/format.ts';
 import type { Json } from './fixtures.ts';
@@ -50,10 +51,19 @@ describe('parseResult', () => {
         const r = travel(okBody({ contours: { type: 'FeatureCollection', features: [feature(1), ...bad, feature(2)] } }));
         expect(r?.contours.map((c) => c.properties.hours)).toEqual([1, 2]);
     });
-    it('falls back to a default colour and drops half a label position', () => {
-        const r = travel(okBody({ contours: { type: 'FeatureCollection', features: [feature(1, { color: 'red', label_lat: undefined })] } }));
-        expect(r?.contours[0].properties.color).toBe('#3388ff');
+    it('drops half a label position', () => {
+        const r = travel(okBody({ contours: { type: 'FeatureCollection', features: [feature(1, { label_lat: undefined })] } }));
         expect(r?.contours[0].properties.label_lat).toBeUndefined();
+    });
+    it('ignores the engine colours and colours the bands by rank, smallest first, whatever the order', () => {
+        const r = travel(okBody({ contours: { type: 'FeatureCollection', features: [feature(4, { color: '#00bcd4' }), feature(1, { color: 'nope' }), feature(2.5)] } }));
+        expect(r?.contours.map((c) => [c.properties.hours, c.properties.color])).toEqual([[4, '#fbc02d'], [1, '#d32f2f'], [2.5, '#f57c00']]);
+    });
+    it('starts the colours again after eight bands', () => {
+        const hours = [0.5, 1, 2, 3, 4, 5, 6, 7, 8];
+        const r = travel(okBody({ contours: { type: 'FeatureCollection', features: hours.map((h) => feature(h)) } }));
+        expect(r?.contours.map((c) => c.properties.color)).toEqual([...BAND_COLORS, BAND_COLORS[0]]);
+        expect(new Set(BAND_COLORS).size).toBe(BAND_COLORS.length);
     });
     it('drops malformed warnings and attribution entries', () => {
         const r = travel(okBody({ warnings: [null, { message: '' }, { severity: 'other', message: 'm' }], attribution: ['a', 3, ''] }));
@@ -150,5 +160,27 @@ describe('format', () => {
         expect(formatUtc('nonsense')).toBe('nonsense');
         expect(formatStamp('2026-03-01T12:05:59Z')).toBe('20260301-1205Z');
         expect(formatStamp('nonsense')).toBe('unknown-time');
+    });
+});
+describe('withoutPlainCircles', () => {
+    const rings = (...r: [25 | 50 | 75, 'terrain' | 'plain'][]): TarrResult => parseResult(tarrBody({
+        contours: { type: 'FeatureCollection', features: r.map(([p, k]) => ring(p, k)) },
+        warnings: [],
+    }), 'tarr') as TarrResult;
+    it('keeps the terrain rings and returns the same object when there is nothing to drop', () => {
+        const only = rings([25, 'terrain'], [50, 'terrain']);
+        expect(withoutPlainCircles(only)).toBe(only);
+        const both = withoutPlainCircles(rings([25, 'terrain'], [25, 'plain'], [50, 'terrain'], [50, 'plain']));
+        expect(both.rings.map((r) => `${r.percent} ${r.kind}`)).toEqual(['25 terrain', '50 terrain']);
+        expect(both.warnings).toEqual([]);
+    });
+    it('notes each percentage that is left without any ring, once, smallest first', () => {
+        const out = withoutPlainCircles(rings([75, 'plain'], [50, 'plain'], [25, 'terrain'], [25, 'plain']));
+        expect(out.rings.map((r) => `${r.percent} ${r.kind}`)).toEqual(['25 terrain']);
+        expect(out.warnings.map((w) => w.message)).toEqual([
+            'No terrain ring for 50%. Its plain circle is hidden because plain circles are switched off.',
+            'No terrain ring for 75%. Its plain circle is hidden because plain circles are switched off.',
+        ]);
+        expect(out.warnings.every((w) => w.severity === 'info')).toBe(true);
     });
 });

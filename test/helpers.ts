@@ -153,3 +153,10 @@ export function makeFakeApi(map: EventedFakeMap | Error = new EventedFakeMap(), 
         },
     };
 }
+
+/** The radio input behind a pill of a TablerPillGroup, found by the text of its label. */
+export function pill(w: { findAll(selector: string): { text(): string; attributes(name: string): string | undefined }[]; get(selector: string): { element: Element; trigger(event: string): Promise<void> } }, text: string) {
+    const label = w.findAll('label.btn').find((l) => l.text() === text);
+    if (!label) throw new Error(`No pill "${text}"`);
+    return w.get(`#${label.attributes('for')}`);
+}

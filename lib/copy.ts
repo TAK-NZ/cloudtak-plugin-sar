@@ -7,8 +7,8 @@
 export const MODE_NAME_TRAVEL_TIME = 'Travel Time';
 export const MODE_NAME_TARR = 'TARR Analysis';
 
-export const MODE_DESC_TRAVEL_TIME = 'Model where a subject could reach over time at a given travel speed. No subject profile needed.';
-export const MODE_DESC_TARR = 'Terrain-Aware Range Rings from a Lost Person Behavior subject profile. Rings are not calibrated for New Zealand.';
+export const MODE_DESC_TRAVEL_TIME = 'How far a person could get over time at a walking speed.';
+export const MODE_DESC_TARR = 'Terrain-aware range rings from a subject profile.';
 export const TARR_UNAVAILABLE = 'Not available on this server';
 
 export interface ExplainerSection {
@@ -65,20 +65,19 @@ export const WHATS_TARR: Explainer = {
     ],
 };
 
-export const HINT_SPEED = 'Assumed speed on flat, unobstructed ground. The model adjusts for slope, land cover and trails.';
-export const HINT_PRESETS = 'Presets: Impaired, Slow, Moderate and Fit hiker.';
-export const HINT_BANDS = 'Each band draws the outer edge of where the subject could physically be after that time.';
-export const HINT_START = 'Pick a point on the map, choose a marker, or enter latitude and longitude.';
-export const HINT_RADIUS = '1 to 30 km. Larger radii take longer. In cities, large radii are slow.';
-export const HINT_PROFILE = 'The profile sets the 25%, 50% and 75% distances from the Koester tables.';
+export const HINT_SPEED = 'Speed on flat ground. The model adjusts for terrain.';
+export const HINT_RADIUS = '1 to 30 km. Larger radii take longer.';
 export const HINT_TARR_RADIUS = 'The analysis area is the calibrated 75% distance plus 2 km, at most 30 km.';
 
 export const TARR_NOTICE_CALIBRATION = 'Ring distances are scaled by multipliers fitted to Coconino County, Arizona. They are not calibrated for New Zealand.';
 export const TARR_NOTICE_PERCENT = 'The ring percentages come from United States search records. They are not the chance of finding someone in New Zealand.';
 export const TARR_NOTICE_LEGEND = 'Solid rings are terrain-adjusted. Dashed circles are the plain Koester distance, without terrain or multiplier.';
 
+export const TARR_NOT_CALIBRATED = 'Not calibrated for New Zealand.';
+export const HINT_PLAIN_CIRCLES = 'Dashed, without terrain. Applies from the next run.';
+export const SHARE_FILES_HINT = 'Save to Files stores a KMZ in Files. There you can download it, add it to the map as an overlay, share it to a channel or add it to a Data Sync.';
 export const SHARE_HINT = 'Add to Data Sync moves the features into the Data Sync, as the CloudTAK Share dialog does.';
-export const SHARE_HOLES = 'Rings with holes lose the holes when they go through the server. The downloaded KML and GeoJSON keep them.';
+export const SHARE_HOLES = 'Rings with holes lose the holes when they go through the server. The map features and the KMZ in Files keep them.';
 export const NO_DATA_SYNCS = 'No Data Syncs where you can add features. Subscribe to one first.';
 
 export const RUN_HINT_START = 'Set the start point to run.';

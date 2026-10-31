@@ -2,27 +2,31 @@
     <div
         role='group'
         aria-label='Speed presets'
-        class='d-flex flex-wrap gap-2 mb-2'
+        class='row g-2 mb-2'
         data-test='speed-presets'
     >
-        <button
+        <div
             v-for='preset in SPEED_PRESETS'
             :key='preset.kmh'
-            type='button'
-            class='btn btn-sm'
-            :class='isActive(preset.kmh) ? "btn-primary" : "btn-outline-secondary"'
-            style='min-height: 44px; min-width: 44px;'
-            :aria-pressed='isActive(preset.kmh) ? "true" : "false"'
-            :disabled='disabled'
-            data-test='speed-preset'
-            @click='setSpeed(preset.kmh)'
+            class='col-6'
         >
-            <span class='d-block'>{{ preset.kmh.toFixed(1) }} km/h</span>{{ ' ' }}
-            <span
-                class='d-block small'
-                v-text='preset.label'
-            />
-        </button>
+            <button
+                type='button'
+                class='btn w-100 d-flex flex-column align-items-center justify-content-center py-2'
+                :class='isActive(preset.kmh) ? "btn-primary" : "btn-outline-secondary"'
+                style='min-height: 56px;'
+                :aria-pressed='isActive(preset.kmh) ? "true" : "false"'
+                :disabled='disabled'
+                data-test='speed-preset'
+                @click='setSpeed(preset.kmh)'
+            >
+                <span
+                    class='fw-bold'
+                    v-text='preset.label'
+                />{{ ' ' }}
+                <span class='small'>{{ preset.kmh.toFixed(1) }} km/h</span>
+            </button>
+        </div>
     </div>
 </template>
 <script setup lang='ts'>

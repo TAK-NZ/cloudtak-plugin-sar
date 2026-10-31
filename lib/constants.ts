@@ -14,6 +14,12 @@ export const TARR_PATH = '/api/sar/tarr';
 /** CloudTAK's data package route (PUT) and file download route (GET). */
 export const PACKAGE_PATH = '/api/marti/package';
 export const FILES_PATH = '/api/marti/api/files';
+/** The Imports route (PUT a file, GET its status) and the Files menu route. */
+export const IMPORT_PATH = '/api/import';
+export const FILES_ROUTE = '/menu/files';
+/** How often and how long to ask whether Files has finished reading an uploaded KMZ. */
+export const IMPORT_POLL_MS = 2000;
+export const IMPORT_MAX_WAIT_MS = 120000;
 export const STATUS_TIMEOUT_MS = 8000;
 /** The relay waits up to 70 s for the engine; give it a little more. */
 export const CALCULATE_TIMEOUT_MS = 80000;
@@ -61,5 +67,21 @@ export const DEFAULT_RADIUS = '10';
 /** The 422 code of the engine's dense-area refusal. */
 export const CODE_AREA_TOO_DENSE = 'area_too_dense';
 
-/** Used when a contour has no usable colour. */
+/**
+ * The colours of the Travel Time bands, smallest band first. The engine sends a cyan, green and yellow ramp
+ * that disappears on a map with a lot of green, blue and grey, so the plugin uses warm, saturated colours
+ * instead, starting with the red, orange and yellow of the TARR rings. A ninth band starts the list again.
+ */
+export const BAND_COLORS: readonly string[] = [
+    '#d32f2f', // red
+    '#f57c00', // orange
+    '#fbc02d', // yellow
+    '#8e24aa', // purple
+    '#e91e63', // pink
+    '#6d4c41', // brown
+    '#ffffff', // white
+    '#212121', // black
+];
+
+/** Used when a TARR ring has no usable colour. */
 export const FALLBACK_COLOR = '#3388ff';

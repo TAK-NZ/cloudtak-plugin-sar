@@ -6,16 +6,18 @@ import MenuTemplate from '../../src/components/CloudTAK/util/MenuTemplate.vue';
 import SarPane from './lib/SarPane.vue';
 import { MenuIcon, removeMenuIconStyle } from './lib/MenuIcon.ts';
 import { host, isMobile, saveBlob } from './lib/host.ts';
-import { FEATURE_PATH, MENU_KEY, ROUTE_NAME, ROUTE_PATH } from './lib/constants.ts';
+import { FEATURE_PATH, FILES_ROUTE, MENU_KEY, ROUTE_NAME, ROUTE_PATH } from './lib/constants.ts';
 import { calculate, fetchStatus, tarrAvailable } from './lib/relay-client.ts';
 import type { StatusReason } from './lib/relay-client.ts';
-import { buildExportFiles } from './lib/export.ts';
+import { buildKmz } from './lib/export.ts';
+import { saveToFiles } from './lib/files.ts';
 import { buildFeatures } from './lib/features.ts';
 import type { SarFeature } from './lib/features.ts';
 import { SarLayers } from './lib/layers.ts';
 import type { MapLike } from './lib/layers.ts';
 import { startPicking } from './lib/picker.ts';
 import type { PickMap } from './lib/picker.ts';
+import { withoutPlainCircles } from './lib/result.ts';
 import { addToDataSync, createDataPackage, placeFeatures } from './lib/share.ts';
 import {
     announce, bindController, bindStorage, cancelRun, clearAll, failRun, finishRun, form, resetAll,
@@ -148,7 +150,8 @@ export default class SarPlugin implements PluginInstance {
                 loadMarkers: () => this.loadMarkers(),
                 addToDataSync: (missions) => this.shareTask(act, () => this.moveToDataSync(missions)),
                 createPackage: (options) => this.shareTask(act, () => this.makePackage(options)),
-                exportFiles: () => this.shareTask(act, () => this.downloadFiles()),
+                saveToFiles: () => this.shareTask(act, () => this.saveFiles(act)),
+                openFiles: () => this.navigate(FILES_ROUTE),
             });
             act.stops.push(() => bindController(null));
 
@@ -260,11 +263,11 @@ export default class SarPlugin implements PluginInstance {
         act.timer = setInterval(() => {
             session.elapsed = Math.floor((Date.now() - started) / 1000);
         }, 1000);
-        void this.runAndPlace(act, check.request, ctl.signal, stale);
+        void this.runAndPlace(act, check.request, ctl.signal, stale, form.plainCircles);
     }
 
     /** Calculate, put the features on the map, then show the result. Cancel and teardown discard it. */
-    private async runAndPlace(act: Activation, request: CalcRequest, signal: AbortSignal, stale: () => boolean): Promise<void> {
+    private async runAndPlace(act: Activation, request: CalcRequest, signal: AbortSignal, stale: () => boolean, plainCircles: boolean): Promise<void> {
         const outcome = await calculate(host, request, signal);
         // Cancelled, closed or torn down meanwhile: the answer is not wanted.
         if (stale()) return;
@@ -274,9 +277,11 @@ export default class SarPlugin implements PluginInstance {
             return;
         }
         const meta = runMeta(request);
+        // The plain circles are dropped here, so the map, the pane and the KMZ all show the same rings.
+        const result = outcome.result.mode === 'tarr' && !plainCircles ? withoutPlainCircles(outcome.result) : outcome.result;
         let ids: string[];
         try {
-            ids = await placeFeatures(this.api.feature, session.featureIds, buildFeatures(outcome.result, meta));
+            ids = await placeFeatures(this.api.feature, session.featureIds, buildFeatures(result, meta));
         } catch (err) {
             if (stale()) return;
             console.error('[sar] Could not add the features to the map', err);
@@ -293,11 +298,11 @@ export default class SarPlugin implements PluginInstance {
         }
         this.endRun(act);
         try {
-            if (outcome.result.bbox) act.layers?.fit(outcome.result.bbox);
+            if (result.bbox) act.layers?.fit(result.bbox);
         } catch (err) {
             console.warn('[sar] Could not move the map to the result', err);
         }
-        finishRun(outcome.result, meta, ids);
+        finishRun(result, meta, ids);
     }
 
     /** Stops the elapsed timer and forgets the request. */
@@ -336,6 +341,7 @@ export default class SarPlugin implements PluginInstance {
     private async shareTask(act: Activation, task: () => Promise<string>): Promise<void> {
         if (act.dead || session.share.busy || !session.result) return;
         session.share.busy = true;
+        session.share.status = '';
         session.share.message = '';
         session.share.error = '';
         try {
@@ -350,6 +356,7 @@ export default class SarPlugin implements PluginInstance {
             announce(`Error: ${text}`);
         } finally {
             session.share.busy = false;
+            session.share.status = '';
         }
     }
 
@@ -393,11 +400,20 @@ export default class SarPlugin implements PluginInstance {
         return `Data package "${options.name}" created and downloaded.${extra}`;
     }
 
-    private async downloadFiles(): Promise<string> {
+    /** Build the KMZ from the features as they are now and put it in the user's Files. */
+    private async saveFiles(act: Activation): Promise<string> {
         const features = await this.currentFeatures();
-        const file = buildExportFiles(features, session.result as AnalysisResult, session.meta as RunMeta);
-        saveBlob(new Blob([file.bytes as BlobPart], { type: file.mime }), file.filename);
-        return `Downloaded ${file.filename}.`;
+        const file = buildKmz(features, session.result as AnalysisResult, session.meta as RunMeta);
+        const { finished } = await saveToFiles(host, file, {
+            onStatus: (text) => {
+                if (!act.dead) session.share.status = text;
+            },
+            cancelled: () => act.dead,
+        });
+        session.share.saved = true;
+        return finished
+            ? `Saved "${file.filename}" to Files.`
+            : `Uploaded "${file.filename}". Files is still reading it, so check Files in a moment.`;
     }
 
     /**

@@ -4,7 +4,7 @@ import { STORAGE_KEY } from '../lib/constants.ts';
 import type { CalcError } from '../lib/types.ts';
 import {
     addBand, addQuickBand, announce, applySuggestion, bindController, bindStorage, cancelRun, chooseMarker, clearAll, controller, failRun,
-    finishRun, form, removeBand, resetAll, session, setEcoregion, setMode, setProfile, setSpeed, setStartPoint, setTerrain, startRun,
+    finishRun, form, removeBand, resetAll, session, setEcoregion, setMode, setPlainCircles, setProfile, setSpeed, setStartPoint, setTerrain, startRun,
     suggestionButtons, toggleMarkers,
 } from '../lib/state.ts';
 import type { StorageLike } from '../lib/state.ts';
@@ -64,7 +64,7 @@ describe('defaults and persistence', () => {
         setTerrain('Mountainous');
         setStartPoint(172, -40);
         expect(JSON.parse(store.data[STORAGE_KEY])).toEqual({
-            mode: 'tarr', speed: '3', bands: [1, 2, 4], radius: '12', profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous',
+            mode: 'tarr', speed: '3', bands: [1, 2, 4], radius: '12', profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous', plainCircles: true,
         });
         expect(store.data[STORAGE_KEY]).not.toContain('172');
         expect(Object.keys(store.data)).toEqual([STORAGE_KEY]);
@@ -88,6 +88,19 @@ describe('defaults and persistence', () => {
         expect(form.mode).toBe('travel-time');
     });
 
+    it('saves the plain circles choice and loads it, defaulting to on', () => {
+        const store = memory();
+        bindStorage(store);
+        expect(form.plainCircles).toBe(true);
+        setPlainCircles(false);
+        expect(JSON.parse(store.data[STORAGE_KEY]).plainCircles).toBe(false);
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ plainCircles: false }) }));
+        expect(form.plainCircles).toBe(false);
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ plainCircles: 'no' }) }));
+        expect(form.plainCircles).toBe(true);
+        bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ speed: '4' }) }));
+        expect(form.plainCircles).toBe(true);
+    });
     it('loads saved values and falls back to the defaults for unusable ones', () => {
         bindStorage(memory({ [STORAGE_KEY]: JSON.stringify({ speed: '4', bands: [2, 1], radius: '' }) }));
         expect(form.speed).toBe('4');
@@ -330,7 +343,7 @@ describe('applying a suggestion only edits the inputs', () => {
     it('does not call run or any other controller function', () => {
         const spies = {
             run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), loadMarkers: vi.fn(async () => []),
-            addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), exportFiles: vi.fn(async () => undefined),
+            addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), saveToFiles: vi.fn(async () => undefined), openFiles: vi.fn(),
         };
         bindController(spies);
         failRun(dense({ radiusKm: 6, maxHours: 3 }));

@@ -31,15 +31,16 @@ import { MenuIcon } from '../lib/MenuIcon.ts';
 import { blobBytes, unzipEntries } from './unzip.ts';
 import { applySuggestion, controller, form, session, setMode, suggestionButtons } from '../lib/state.ts';
 import { STORAGE_KEY } from '../lib/constants.ts';
-import { EventedFakeMap, deferred, makeFakeApi } from './helpers.ts';
+import { EventedFakeMap, deferred, makeFakeApi, pill } from './helpers.ts';
 import type { FakeApi, FakeFeature } from './helpers.ts';
-import { htmlResponse, jsonResponse, okBody, tarrBody } from './fixtures.ts';
+import { htmlResponse, jsonResponse, okBody, ring, tarrBody } from './fixtures.ts';
 
 const host = hostMock.host;
 const STATUS_URL = 'https://cot.test/api/sar/status';
 const CALC_URL = 'https://cot.test/api/sar/travel-time';
 const TARR_URL = 'https://cot.test/api/sar/tarr';
 const PACKAGE_URL = 'https://cot.test/api/marti/package';
+const IMPORT_URL = 'https://cot.test/api/import';
 
 type Plugin = PluginInstance & { pending: Promise<void>; generation: number };
 
@@ -49,6 +50,8 @@ let statusReply: () => Promise<Response>;
 let calcReply: (init?: RequestInit) => Promise<Response>;
 let tarrReply: (init?: RequestInit) => Promise<Response>;
 let packageReply: () => Promise<Response>;
+let importReply: (init?: RequestInit) => Promise<Response>;
+let importStatusReply: () => Promise<Response>;
 let tokenValue: string | undefined;
 const store = new Map<string, string>();
 
@@ -139,6 +142,8 @@ beforeEach(() => {
     calcReply = () => Promise.resolve(jsonResponse(200, okBody()));
     tarrReply = () => Promise.resolve(jsonResponse(200, tarrBody()));
     packageReply = () => Promise.resolve(jsonResponse(200, { Hash: 'hash-1' }));
+    importReply = () => Promise.resolve(jsonResponse(200, { imports: [{ file: 'x.kmz', uid: 'imp-1', ext: '.kmz' }] }));
+    importStatusReply = () => Promise.resolve(jsonResponse(200, { status: 'Success', error: null, results: [] }));
     host.token.mockReset();
     host.token.mockImplementation(async () => tokenValue);
     host.fetch.mockReset();
@@ -146,6 +151,8 @@ beforeEach(() => {
         if (url === STATUS_URL) return statusReply();
         if (url === TARR_URL) return tarrReply(init);
         if (url === PACKAGE_URL) return packageReply();
+        if (url === IMPORT_URL) return importReply(init);
+        if (url.startsWith(`${IMPORT_URL}/`)) return importStatusReply();
         if (url.startsWith('https://cot.test/api/marti/api/files/')) return new Response('zip-bytes', { status: 200 });
         return calcReply(init);
     });
@@ -263,14 +270,13 @@ describe('side pane registration', () => {
         expect(template.attributes('data-name')).toBe('SAR planning');
         expect(template.attributes('data-back')).toBe('false');
         expect(template.find('[data-test=pane]').exists()).toBe(true);
-        expect(w.find('[data-test=mode-travel-time]').exists()).toBe(true);
-        expect(w.find('[data-test=mode-tarr]').exists()).toBe(true);
+        expect(w.findAll('label.btn').map((l) => l.text())).toEqual(['Travel Time', 'TARR Analysis']);
     });
 
     it('renders both modes', async () => {
         const w = openPane(await enabled());
         expect(w.find('[data-test=speed]').exists()).toBe(true);
-        await w.get('[data-test=mode-tarr]').setValue(true);
+        await pill(w, 'TARR Analysis').trigger('click');
         expect(w.find('[data-test=profile]').exists()).toBe(true);
         expect(w.find('[data-test=speed]').exists()).toBe(false);
     });
@@ -294,7 +300,7 @@ describe('side pane registration', () => {
         const ctx = await enabled();
         expect(session.tarrAvailable).toBe(false);
         const w = openPane(ctx);
-        expect((w.get('[data-test=mode-tarr]').element as HTMLInputElement).disabled).toBe(true);
+        expect((pill(w, 'TARR Analysis').element as HTMLInputElement).disabled).toBe(true);
         setMode('tarr');
         expect(form.mode).toBe('travel-time');
     });
@@ -797,7 +803,7 @@ describe('saved values', () => {
         form.profile = 'Hiker';
         type();
         const saved = JSON.parse(store.get(STORAGE_KEY) as string);
-        expect(saved).toEqual({ mode: 'tarr', speed: '3', bands: [1, 2, 4, 8], radius: '10', profile: 'Hiker', ecoregion: '', terrain: '' });
+        expect(saved).toEqual({ mode: 'tarr', speed: '3', bands: [1, 2, 4, 8], radius: '10', profile: 'Hiker', ecoregion: '', terrain: '', plainCircles: true });
     });
 
     it('restores them on the next enable and does not overwrite them on disable', async () => {
@@ -955,48 +961,132 @@ describe('Create data package', () => {
     });
 });
 
-describe('Download KML and GeoJSON', () => {
-    it('downloads a zip with the KML, the GeoJSON and a README, including the IPP', async () => {
+/** The KMZ that was PUT to the Imports route: its file name and the entries of the zip. */
+async function uploadedKmz(): Promise<{ name: string; kml: string; entries: string[] }> {
+    const put = host.fetch.mock.calls.find((c) => c[0] === IMPORT_URL) as [string, RequestInit];
+    const file = (put[1].body as FormData).get('file') as File;
+    const entries = unzipEntries(await blobBytes(file));
+    return { name: file.name, kml: new TextDecoder().decode(entries[0].data), entries: entries.map((e) => e.name) };
+}
+describe('Save to Files', () => {
+    it('uploads a KMZ with the polygons and the IPP to the Imports route, then reports it saved', async () => {
         await enabled();
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        await controller.exportFiles();
-        expect(hostMock.saveBlob).toHaveBeenCalledTimes(1);
-        const [blob, name] = hostMock.saveBlob.mock.calls[0] as [Blob, string];
-        expect(name).toMatch(/^sar-travel-time-\d{8}-\d{4}Z\.zip$/);
-        const entries = unzipEntries(await blobBytes(blob));
-        expect(entries.map((e) => e.name.replace(/^sar-travel-time-\d{8}-\d{4}Z/, 'base'))).toEqual(['base.kml', 'base.geojson', 'README.txt']);
-        const kml = new TextDecoder().decode(entries[0].data);
-        expect(kml).toContain('<name>SAR IPP</name>');
-        expect(kml).toContain('<name>SAR 4 h</name>');
-        const gj = JSON.parse(new TextDecoder().decode(entries[1].data)) as { features: { properties: { callsign: string } }[] };
-        expect(gj.features.map((f) => f.properties.callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
-        expect(session.share.message).toBe(`Downloaded ${name}.`);
+        await controller.saveToFiles();
+        const put = host.fetch.mock.calls.find((c) => c[0] === IMPORT_URL) as [string, RequestInit];
+        expect(put[1].method).toBe('PUT');
+        const headers = put[1].headers as Record<string, string>;
+        expect(headers.Authorization).toBe('Bearer tok-1');
+        expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('content-type');
+        const kmz = await uploadedKmz();
+        expect(kmz.name).toMatch(/^SAR Travel Time \d{8}-\d{4}Z\.kmz$/);
+        expect(kmz.entries).toEqual(['doc.kml']);
+        expect(kmz.kml).toContain('<name>SAR IPP</name>');
+        expect(kmz.kml).toContain('<name>SAR 4 h</name>');
+        expect(host.fetch.mock.calls.some((c) => c[0] === `${IMPORT_URL}/imp-1`)).toBe(true);
+        expect(session.share.message).toBe(`Saved "${kmz.name}" to Files.`);
+        expect(session.share.saved).toBe(true);
+        expect(session.share.busy).toBe(false);
+        expect(session.share.status).toBe('');
+        expect(hostMock.saveBlob).not.toHaveBeenCalled();
     });
-
-    it('exports the TARR rings, holes and the IPP', async () => {
+    it('saves the TARR rings with their holes and the IPP', async () => {
         await enabled();
         await runTarr();
-        await controller.exportFiles();
-        const [blob, name] = hostMock.saveBlob.mock.calls[0] as [Blob, string];
-        expect(name).toMatch(/^sar-tarr-/);
-        const entries = unzipEntries(await blobBytes(blob));
-        const kml = new TextDecoder().decode(entries[0].data);
-        expect(kml).toContain('<innerBoundaryIs>');
-        expect(kml).toContain('<name>SAR IPP</name>');
-        expect(new TextDecoder().decode(entries[2].data)).toContain('Not calibrated for New Zealand');
+        await controller.saveToFiles();
+        const kmz = await uploadedKmz();
+        expect(kmz.name).toMatch(/^SAR TARR /);
+        expect(kmz.kml).toContain('<innerBoundaryIs>');
+        expect(kmz.kml).toContain('plain circle');
+        expect(kmz.kml).toContain('<name>SAR IPP</name>');
     });
-
-    it('exports the result again after the features were moved', async () => {
+    it('saves the result again after the features were moved into a Data Sync', async () => {
         await enabled();
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
         await controller.addToDataSync([{ guid: 'g1', name: 'Alpha' }]);
-        await controller.exportFiles();
-        const [blob] = hostMock.saveBlob.mock.calls[0] as [Blob, string];
-        const entries = unzipEntries(await blobBytes(blob));
-        expect(new TextDecoder().decode(entries[0].data)).toContain('<name>SAR IPP</name>');
+        await controller.saveToFiles();
+        expect((await uploadedKmz()).kml).toContain('<name>SAR IPP</name>');
+    });
+    it('says Files is still reading the file when the status cannot be read', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importStatusReply = () => Promise.reject(new TypeError('Failed to fetch'));
+        await controller.saveToFiles();
+        expect(session.share.message).toMatch(/^Uploaded "SAR Travel Time .*\.kmz"\. Files is still reading it/);
+        expect(session.share.error).toBe('');
+        expect(session.share.saved).toBe(true);
+    });
+    it('shows the reason when Files cannot read the KMZ, and offers no Open Files', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importStatusReply = () => Promise.resolve(jsonResponse(200, { status: 'Fail', error: 'Bad KML' }));
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('Files could not read the KMZ. Bad KML');
+        expect(session.share.saved).toBe(false);
+    });
+    it('shows the server message when the upload is refused', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importReply = () => Promise.resolve(jsonResponse(413, { message: 'File too large' }));
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('File too large');
+        expect(host.fetch.mock.calls.some((c) => String(c[0]).startsWith(`${IMPORT_URL}/`))).toBe(false);
+    });
+    it('needs a sign-in', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        tokenValue = undefined;
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('You are not signed in');
+    });
+    it('does nothing without a result', async () => {
+        await enabled();
+        await controller.saveToFiles();
+        expect(host.fetch.mock.calls.some((c) => c[0] === IMPORT_URL)).toBe(false);
+    });
+    it('Open Files goes to the Files menu', async () => {
+        const ctx = await enabled();
+        controller.openFiles();
+        expect(ctx.calls).toContain('router.push:/menu/files');
     });
 });
-
+describe('plain circles', () => {
+    it('are drawn by default, next to every terrain ring', async () => {
+        const ctx = await enabled();
+        await runTarr();
+        expect(ctx.features.map(callsign).filter((c) => String(c).includes('plain circle'))).toHaveLength(3);
+    });
+    it('are left out of the map, the result and the KMZ when switched off', async () => {
+        const ctx = await enabled();
+        form.plainCircles = false;
+        await runTarr();
+        expect(ctx.features.map(callsign)).toEqual([
+            'Koester 75%, terrain-adjusted (3.703 km)', 'Koester 50%, terrain-adjusted (2.036 km)', 'Koester 25%, terrain-adjusted (0.736 km)', 'SAR IPP',
+        ]);
+        expect(session.result?.mode === 'tarr' && session.result.rings.map((r) => r.kind)).toEqual(['terrain', 'terrain', 'terrain']);
+        expect(session.announcement).toBe('Calculation finished. 3 rings and the start point added to the map as features.');
+        await controller.saveToFiles();
+        expect((await uploadedKmz()).kml).not.toContain('plain circle');
+    });
+    it('say so when a terrain ring is missing and its plain circle is hidden', async () => {
+        await enabled();
+        form.plainCircles = false;
+        tarrReply = () => Promise.resolve(jsonResponse(200, tarrBody({ contours: { type: 'FeatureCollection', features: [ring(50, 'plain'), ring(25, 'terrain'), ring(25, 'plain')] } })));
+        setMode('tarr');
+        form.profile = 'Hiker';
+        type();
+        controller.run();
+        await flushPromises();
+        const notes = session.result?.warnings.filter((w) => w.source === 'plugin').map((w) => w.message);
+        expect(notes).toEqual(['No terrain ring for 50%. Its plain circle is hidden because plain circles are switched off.']);
+    });
+    it('do not change a Travel Time run', async () => {
+        const ctx = await enabled();
+        form.plainCircles = false;
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(ctx.features.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+    });
+});
 describe('disable()', () => {
     it('leaves no trace of the plugin, but leaves the features on the map', async () => {
         vi.useFakeTimers();

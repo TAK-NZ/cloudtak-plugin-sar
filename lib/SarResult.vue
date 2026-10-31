@@ -1,55 +1,22 @@
 <template>
-    <section
+    <Section
         v-if='result'
-        aria-label='Result'
+        id='result'
+        label='Result'
+        :icon='IconListDetails'
+        tag='div'
         data-test='result'
     >
-        <h3 class='h4'>
-            Result
-        </h3>
         <template v-if='result.mode === "tarr"'>
             <p
-                class='mb-2'
+                class='mb-0'
                 data-test='summary'
             >
                 Subject profile <span v-text='subject' />.
                 <span v-if='result.parameters.radiusKm !== null'>Analysis radius {{ formatKm(result.parameters.radiusKm) }} km.</span>
             </p>
-            <p
-                v-if='result.parameters.koesterKm'
-                class='mb-1'
-                data-test='koester-km'
-            >
-                Koester distances: {{ triple(result.parameters.koesterKm, 'km') }}
-            </p>
-            <p
-                v-if='result.parameters.calibratedKm'
-                class='mb-1'
-                data-test='calibrated-km'
-            >
-                Calibrated distances used: {{ triple(result.parameters.calibratedKm, 'km') }}
-            </p>
-            <p
-                class='mb-1'
-                data-test='multiplier'
-            >
-                <span v-if='multiplier'>Multiplier used: <span v-text='multiplier' />. </span>
-                <span v-if='result.calibration?.region'>Fitted to <span v-text='result.calibration.region' />. </span>
-                <span class='fw-bold'>Not calibrated for New Zealand.</span>
-            </p>
-            <p
-                v-if='result.calibration?.note'
-                class='small mb-2'
-                data-test='calibration-note'
-                v-text='result.calibration.note'
-            />
-            <p
-                class='small mb-2'
-                data-test='tarr-percent-notice'
-                v-text='TARR_NOTICE_PERCENT'
-            />
             <ul
-                class='list-unstyled mb-2'
+                class='list-unstyled mb-0'
                 aria-label='Rings drawn'
                 data-test='bands'
             >
@@ -71,27 +38,27 @@
             </ul>
             <p
                 v-if='rings.length === 0'
-                class='mb-2'
+                class='mb-0'
                 data-test='no-bands'
             >
                 No rings were drawn.
             </p>
             <p
-                class='small text-secondary mb-2'
-                data-test='tarr-legend'
-                v-text='TARR_NOTICE_LEGEND'
+                class='fw-bold mb-0'
+                data-test='tarr-not-calibrated'
+                v-text='TARR_NOT_CALIBRATED'
             />
         </template>
         <template v-else>
             <p
-                class='mb-2'
+                class='mb-0'
                 data-test='summary'
             >
                 <span v-if='result.parameters.radius_km !== null'>Effective radius {{ formatKm(result.parameters.radius_km) }} km. </span>
                 <span v-if='result.parameters.speed_kmh !== null'>Speed {{ result.parameters.speed_kmh }} km/h.</span>
             </p>
             <ul
-                class='list-unstyled mb-2'
+                class='list-unstyled mb-0'
                 aria-label='Time bands drawn'
                 data-test='bands'
             >
@@ -102,9 +69,9 @@
                     data-test='result-band'
                 >
                     <span
-                        class='d-inline-block flex-shrink-0 rounded border'
+                        class='d-inline-block flex-shrink-0 rounded'
                         style='width: 16px; height: 16px;'
-                        :style='{ backgroundColor: band.color }'
+                        :style='{ border: `2px solid ${band.color}`, backgroundColor: band.color }'
                         aria-hidden='true'
                         data-test='swatch'
                     />
@@ -113,57 +80,109 @@
             </ul>
             <p
                 v-if='bands.length === 0'
-                class='mb-2'
+                class='mb-0'
                 data-test='no-bands'
             >
                 No contours were drawn.
             </p>
         </template>
-        <ul
+        <div
             v-if='result.warnings.length'
-            class='list-unstyled mb-2'
+            class='d-flex flex-column gap-2'
+            role='group'
             aria-label='Warnings'
             data-test='warnings'
         >
-            <li
+            <TablerInlineAlert
                 v-for='(w, i) in result.warnings'
                 :key='i'
-                class='mb-1'
+                :severity='w.severity === "warning" ? "warning" : "info"'
+                :title='w.severity === "warning" ? "Warning" : "Note"'
+                :description='w.message'
                 data-test='warning'
-            >
-                <span class='fw-bold'>{{ w.severity === 'warning' ? 'Warning:' : 'Note:' }}</span> <span v-text='w.message' />
-            </li>
-        </ul>
+            />
+        </div>
         <p
             v-if='result.disclaimer'
-            class='mb-2'
+            class='mb-0'
             data-test='disclaimer'
             v-text='result.disclaimer'
         />
-        <ul
-            v-if='result.attribution.length'
-            class='small text-secondary mb-2'
-            aria-label='Data attribution'
-            data-test='attribution'
+        <InfoBox
+            id='result-details'
+            label='Details and data sources'
+            :icon='IconInfoCircle'
         >
-            <li
-                v-for='(line, i) in result.attribution'
-                :key='i'
-                v-text='line'
-            />
-        </ul>
-        <p
-            v-if='built'
-            class='small text-secondary mb-0'
-            data-test='built'
-        >
-            Roads and trails data from {{ built }}
-        </p>
-    </section>
+            <template v-if='result.mode === "tarr"'>
+                <p
+                    v-if='result.parameters.koesterKm'
+                    class='mb-1'
+                    data-test='koester-km'
+                >
+                    Koester distances: {{ triple(result.parameters.koesterKm, 'km') }}
+                </p>
+                <p
+                    v-if='result.parameters.calibratedKm'
+                    class='mb-1'
+                    data-test='calibrated-km'
+                >
+                    Calibrated distances used: {{ triple(result.parameters.calibratedKm, 'km') }}
+                </p>
+                <p
+                    v-if='multiplier || result.calibration?.region'
+                    class='mb-1'
+                    data-test='multiplier'
+                >
+                    <span v-if='multiplier'>Multiplier used: <span v-text='multiplier' />. </span>
+                    <span v-if='result.calibration?.region'>Fitted to <span v-text='result.calibration.region' />.</span>
+                </p>
+                <p
+                    v-if='result.calibration?.note'
+                    class='mb-1'
+                    data-test='calibration-note'
+                    v-text='result.calibration.note'
+                />
+                <p
+                    class='mb-1'
+                    data-test='tarr-percent-notice'
+                    v-text='TARR_NOTICE_PERCENT'
+                />
+                <p
+                    v-if='hasPlain'
+                    class='mb-0'
+                    data-test='tarr-legend'
+                    v-text='TARR_NOTICE_LEGEND'
+                />
+            </template>
+            <ul
+                v-if='result.attribution.length'
+                class='text-secondary mb-0'
+                aria-label='Data attribution'
+                data-test='attribution'
+            >
+                <li
+                    v-for='(line, i) in result.attribution'
+                    :key='i'
+                    v-text='line'
+                />
+            </ul>
+            <p
+                v-if='built'
+                class='text-secondary mb-0'
+                data-test='built'
+            >
+                Roads and trails data from {{ built }}
+            </p>
+        </InfoBox>
+    </Section>
 </template>
 <script setup lang='ts'>
 import { computed } from 'vue';
-import { TARR_NOTICE_LEGEND, TARR_NOTICE_PERCENT } from './copy.ts';
+import { IconInfoCircle, IconListDetails } from '@tabler/icons-vue';
+import { TablerInlineAlert } from '@tak-ps/vue-tabler';
+import Section from './Section.vue';
+import InfoBox from './InfoBox.vue';
+import { TARR_NOT_CALIBRATED, TARR_NOTICE_LEGEND, TARR_NOTICE_PERCENT } from './copy.ts';
 import { ringName } from './features.ts';
 import { formatBuilt, formatHours, formatKm } from './format.ts';
 import { session } from './state.ts';
@@ -186,6 +205,7 @@ const rings = computed(() => {
         .sort((a, b) => a.percent - b.percent || (a.kind === b.kind ? 0 : a.kind === 'terrain' ? -1 : 1))
         .map((f) => ({ text: ringName(f), color: f.color, dashed: f.kind === 'plain' }));
 });
+const hasPlain = computed(() => rings.value.some((r) => r.dashed));
 const subject = computed(() => {
     const r = result.value;
     if (r?.mode !== 'tarr') return '';

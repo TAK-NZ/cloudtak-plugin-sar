@@ -5,12 +5,13 @@ import { nextTick } from 'vue';
 import BandChips from '../lib/BandChips.vue';
 import SarPane from '../lib/SarPane.vue';
 import SarResult from '../lib/SarResult.vue';
-import { bindController, bindStorage, finishRun, form, resetAll, session } from '../lib/state.ts';
+import { bindController, bindStorage, finishRun, form, resetAll, session, ui } from '../lib/state.ts';
 import type { Controller } from '../lib/state.ts';
 import { WHATS_TARR, WHATS_TRAVEL_TIME } from '../lib/copy.ts';
 import { parseResult } from '../lib/result.ts';
 import type { RunMeta, TarrResult } from '../lib/types.ts';
 import { ring, tarrBody } from './fixtures.ts';
+import { pill } from './helpers.ts';
 
 vi.mock('../lib/missions.ts', () => ({ listSubscribedMissions: vi.fn(async () => []) }));
 
@@ -30,7 +31,7 @@ beforeEach(() => {
     session.tarrAvailable = true;
     spies = {
         run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), loadMarkers: vi.fn(async () => []),
-        addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), exportFiles: vi.fn(async () => undefined),
+        addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), saveToFiles: vi.fn(async () => undefined), openFiles: vi.fn(),
     };
     bindController(spies as unknown as Controller);
 });
@@ -44,81 +45,80 @@ afterEach(() => {
 });
 
 describe('mode selector', () => {
-    it('is a radio group named Analysis mode with Travel Time selected', () => {
+    it('is a group of two pills named Analysis mode with Travel Time selected', () => {
         const w = mountPane();
-        const group = w.get('[role=radiogroup]');
-        expect(group.attributes('aria-label')).toBe('Analysis mode');
-        const radios = w.findAll('input[type=radio]');
-        expect(radios).toHaveLength(2);
-        expect(w.get('label[for=sar-mode-travel-time]').text()).toBe('Travel Time');
-        expect(w.get('label[for=sar-mode-tarr]').text()).toBe('TARR Analysis');
-        expect((w.get('[data-test=mode-travel-time]').element as HTMLInputElement).checked).toBe(true);
-        expect((w.get('[data-test=mode-tarr]').element as HTMLInputElement).checked).toBe(false);
+        expect(w.get('[data-test=mode] legend').text()).toBe('Analysis mode');
+        expect(w.findAll('input[type=radio]')).toHaveLength(2);
+        expect(w.findAll('label.btn').map((l) => l.text())).toEqual(['Travel Time', 'TARR Analysis']);
+        expect((pill(w, 'Travel Time').element as HTMLInputElement).checked).toBe(true);
+        expect((pill(w, 'TARR Analysis').element as HTMLInputElement).checked).toBe(false);
     });
-
-    it('describes each mode', () => {
+    it('describes the selected mode in one line', async () => {
         const w = mountPane();
-        expect(w.get('#sar-mode-travel-time-desc').text()).toContain('No subject profile needed');
-        expect(w.get('#sar-mode-tarr-desc').text()).toContain('not calibrated for New Zealand');
-        expect(w.get('[data-test=mode-tarr]').attributes('aria-describedby')).toBe('sar-mode-tarr-desc');
+        expect(w.get('[data-test=mode-desc]').text()).toContain('How far a person could get');
+        await pill(w, 'TARR Analysis').trigger('click');
+        expect(w.get('[data-test=mode-desc]').text()).toContain('Terrain-aware range rings');
     });
-
     it('switches to TARR and shows the profile form instead of the travel settings', async () => {
         const w = mountPane();
         expect(w.find('[data-test=speed]').exists()).toBe(true);
         expect(w.find('[data-test=profile]').exists()).toBe(false);
-        await w.get('[data-test=mode-tarr]').setValue(true);
+        await pill(w, 'TARR Analysis').trigger('click');
         expect(form.mode).toBe('tarr');
         expect(w.find('[data-test=speed]').exists()).toBe(false);
         expect(w.find('[data-test=band-input]').exists()).toBe(false);
         expect(w.find('[data-test=radius]').exists()).toBe(false);
         expect(w.find('[data-test=profile]').exists()).toBe(true);
-        await w.get('[data-test=mode-travel-time]').setValue(true);
+        await pill(w, 'Travel Time').trigger('click');
         expect(form.mode).toBe('travel-time');
         expect(w.find('[data-test=speed]').exists()).toBe(true);
     });
-
     it('disables TARR with a reason when the server cannot do it', () => {
         session.tarrAvailable = false;
         const w = mountPane();
-        expect((w.get('[data-test=mode-tarr]').element as HTMLInputElement).disabled).toBe(true);
-        expect(w.get('[data-test=mode-tarr-desc]').text()).toContain('Not available on this server');
-        expect((w.get('[data-test=mode-travel-time]').element as HTMLInputElement).disabled).toBe(false);
+        expect((pill(w, 'TARR Analysis').element as HTMLInputElement).disabled).toBe(true);
+        expect(w.get('[data-test=mode-desc]').text()).toContain('not available on this server');
+        expect((pill(w, 'Travel Time').element as HTMLInputElement).disabled).toBe(false);
     });
-
     it('is disabled while a calculation runs', async () => {
         const w = mountPane();
         session.run = 'running';
         await nextTick();
         expect(w.get('[data-test=mode]').attributes('disabled')).toBeDefined();
+        expect(w.findAll('input[type=radio]').every((r) => (r.element as HTMLInputElement).disabled)).toBe(true);
     });
-
     it('keeps the start point when the mode changes', async () => {
         const w = mountPane();
         form.lat = '-40';
         form.lng = '172';
-        await w.get('[data-test=mode-tarr]').setValue(true);
+        await pill(w, 'TARR Analysis').trigger('click');
         expect([form.lat, form.lng]).toEqual(['-40', '172']);
     });
 });
-
 describe('explainers', () => {
-    it('has both explainers with their text, the active mode first', async () => {
+    it('is one collapsed box that opens to the explainer of the active mode', async () => {
         const w = mountPane();
-        const first = w.findAll('details').map((d) => d.attributes('data-test'));
-        expect(first).toEqual(['explainer-travel-time', 'explainer-tarr']);
-        await w.get('[data-test=mode-tarr]').setValue(true);
-        expect(w.findAll('details').map((d) => d.attributes('data-test'))).toEqual(['explainer-tarr', 'explainer-travel-time']);
-        expect(w.get('[data-test=explainer-travel-time] summary').text()).toBe("What's Travel Time?");
-        expect(w.get('[data-test=explainer-tarr] summary').text()).toBe("What's a TARR?");
-        for (const e of [WHATS_TRAVEL_TIME, WHATS_TARR]) {
-            for (const section of e.sections) {
-                expect(w.text()).toContain(section.heading);
-                expect(w.text()).toContain(section.text);
-            }
+        const box = w.get('[data-test=explainers]');
+        expect(box.text()).toContain('How it works');
+        for (const section of WHATS_TRAVEL_TIME.sections) expect(w.text()).not.toContain(section.text);
+        await box.get('.slidedown__header').trigger('click');
+        expect(ui.sections.how).toBe(true);
+        for (const section of WHATS_TRAVEL_TIME.sections) {
+            expect(w.text()).toContain(section.heading);
+            expect(w.text()).toContain(section.text);
         }
+        for (const section of WHATS_TARR.sections) expect(w.text()).not.toContain(section.text);
+        await pill(w, 'TARR Analysis').trigger('click');
+        for (const section of WHATS_TARR.sections) expect(w.text()).toContain(section.text);
+        for (const section of WHATS_TRAVEL_TIME.sections) expect(w.text()).not.toContain(section.text);
     });
-
+    it('keeps the open box open when the pane is rebuilt', async () => {
+        const w = mountPane();
+        await w.get('[data-test=explainers] .slidedown__header').trigger('click');
+        w.unmount();
+        const again = mountPane();
+        expect(again.text()).toContain(WHATS_TRAVEL_TIME.sections[0].text);
+    });
     it('describes New Zealand data, not the US sources of the reference tool', () => {
         const text = JSON.stringify([WHATS_TRAVEL_TIME, WHATS_TARR]);
         expect(text).toContain('LCDB');
@@ -130,10 +130,10 @@ describe('explainers', () => {
 describe('travel time hints and presets', () => {
     it('shows the speed hint and four presets in km/h with their labels', () => {
         const w = mountPane();
-        expect(w.get('[data-test=speed-hint]').text()).toContain('Assumed speed on flat, unobstructed ground');
+        expect(w.get('[data-test=speed-hint]').text()).toContain('Speed on flat ground');
         const presets = w.findAll('[data-test=speed-preset]');
         expect(presets.map((p) => p.text().replace(/\s+/g, ' '))).toEqual([
-            '0.8 km/h Impaired', '1.6 km/h Slow', '3.2 km/h Moderate', '5.0 km/h Fit hiker',
+            'Impaired 0.8 km/h', 'Slow 1.6 km/h', 'Moderate 3.2 km/h', 'Fit hiker 5.0 km/h',
         ]);
         expect(w.text()).not.toContain('mph');
     });
@@ -160,10 +160,10 @@ describe('travel time hints and presets', () => {
         });
     });
 
-    it('shows the start point hint and the band hint', () => {
+    it('keeps the hints short: the band limits, and no start point paragraph', () => {
         const w = mountPane();
-        expect(w.get('[data-test=start-hint]').text()).toContain('Pick a point on the map');
-        expect(w.get('#sar-band-help').text()).toContain('outer edge of where the subject could physically be');
+        expect(w.find('[data-test=start-hint]').exists()).toBe(false);
+        expect(w.get('#sar-band-help').text()).toBe('1 to 8 bands, each 0.25 to 24 h.');
     });
 
     it('keeps run disabled until the start point and the speed are set, and says what is missing', async () => {
@@ -221,7 +221,6 @@ describe('TARR form', () => {
         expect(options[0].text.trim()).toBe('Select a profile');
         expect(options).toHaveLength(29);
         expect(options.map((o) => o.text.trim())).toContain('Hiker');
-        expect(w.get('[data-test=profile]').attributes('aria-describedby')).toBe('sar-profile-help');
     });
 
     it('shows the ecoregion and terrain selects only when the profile offers them', async () => {
@@ -252,6 +251,8 @@ describe('TARR form', () => {
         const w = mountPane();
         expect(w.find('[data-test=koester-distances]').exists()).toBe(false);
         await w.get('[data-test=profile]').setValue('Hiker');
+        ui.sections['tarr-about'] = true;
+        await nextTick();
         expect(w.get('[data-test=koester-distances]').text()).toBe('Koester distances for this choice: 25%: 0.64 km, 50%: 1.77 km, 75%: 3.22 km');
         await w.get('[data-test=ecoregion]').setValue('Dry');
         await w.get('[data-test=terrain]').setValue('Flat');
@@ -259,13 +260,37 @@ describe('TARR form', () => {
         expect(w.get('[data-test=koester-source]').text()).toContain('Koester (2008)');
     });
 
-    it('states the Arizona multiplier and the not-calibrated notice before the run', () => {
+    it('says it is not calibrated for New Zealand without opening anything', () => {
+        const w = mountPane();
+        expect(w.get('[data-test=tarr-not-calibrated]').text()).toBe('Not calibrated for New Zealand.');
+        expect(w.find('[data-test=tarr-notice-calibration]').exists()).toBe(false);
+    });
+    it('states the Arizona multiplier and the notices in the box, before the run', () => {
+        ui.sections['tarr-about'] = true;
         const w = mountPane();
         expect(w.get('[data-test=tarr-notice-calibration]').text()).toContain('Coconino County, Arizona');
         expect(w.get('[data-test=tarr-notice-calibration]').text()).toContain('not calibrated for New Zealand');
         expect(w.get('[data-test=tarr-notice-percent]').text()).toContain('not the chance of finding someone in New Zealand');
     });
 
+    it('has a checkbox for the plain circles, on by default, that sets the form value', async () => {
+        const w = mountPane();
+        const box = w.get('[data-test=plain-circles]');
+        expect(w.get('label[for=sar-plain-circles]').text()).toBe('Also draw plain circles');
+        expect((box.element as HTMLInputElement).checked).toBe(true);
+        expect(box.attributes('aria-describedby')).toBe('sar-plain-circles-help');
+        expect(w.get('#sar-plain-circles-help').text()).toBe('Dashed, without terrain. Applies from the next run.');
+        await box.setValue(false);
+        expect(form.plainCircles).toBe(false);
+        await box.setValue(true);
+        expect(form.plainCircles).toBe(true);
+    });
+    it('disables the plain circles checkbox while a calculation runs', async () => {
+        const w = mountPane();
+        session.run = 'running';
+        await nextTick();
+        expect(w.get('[data-test=tarr-profile]').element.closest('fieldset')?.disabled).toBe(true);
+    });
     it('keeps run disabled until the start point and a profile are set', async () => {
         const w = mountPane();
         expect(w.get('[data-test=run-hint]').text()).toBe('Set the start point to run.');
@@ -293,6 +318,7 @@ describe('TARR form', () => {
 
 describe('TARR result', () => {
     const show = async (over: Record<string, unknown> = {}): Promise<VueWrapper> => {
+        ui.sections['result-details'] = true;
         wrapper = mount(SarResult);
         finishRun(tarrResult(over), tarrMeta, []);
         await nextTick();
@@ -317,7 +343,8 @@ describe('TARR result', () => {
 
     it('shows the multiplier used, the region and that it is not calibrated for New Zealand', async () => {
         const w = await show();
-        expect(w.get('[data-test=multiplier]').text()).toBe('Multiplier used: x1.15. Fitted to Coconino County, Arizona. Not calibrated for New Zealand.');
+        expect(w.get('[data-test=multiplier]').text()).toBe('Multiplier used: x1.15. Fitted to Coconino County, Arizona.');
+        expect(w.get('[data-test=tarr-not-calibrated]').text()).toBe('Not calibrated for New Zealand.');
         expect(w.get('[data-test=calibration-note]').text()).toBe('Synthetic calibration note.');
         expect(w.get('[data-test=tarr-percent-notice]').text()).toContain('not the chance of finding someone in New Zealand');
     });
@@ -336,6 +363,10 @@ describe('TARR result', () => {
         expect(w2.get('[data-test=summary]').text()).toContain('Hiker (Dry, Flat)');
     });
 
+    it('leaves out the solid and dashed legend when no plain circle was drawn', async () => {
+        const w = await show({ contours: { type: 'FeatureCollection', features: [ring(50, 'terrain')] } });
+        expect(w.find('[data-test=tarr-legend]').exists()).toBe(false);
+    });
     it('says what solid and dashed mean', async () => {
         const w = await show();
         expect(w.get('[data-test=tarr-legend]').text()).toContain('Solid rings are terrain-adjusted');
@@ -348,17 +379,19 @@ describe('TARR result', () => {
         expect(w.get('[data-test=disclaimer]').find('b').exists()).toBe(false);
         expect(w.get('[data-test=attribution]').text()).toBe('One <i>x</i>');
         expect(w.get('[data-test=built]').text()).toBe('Roads and trails data from 1 March 2026');
-        expect(w.findAll('[data-test=warning]').map((x) => x.text())).toEqual(['Warning: Synthetic calibration warning.']);
+        expect(w.findAll('[data-test=warning]').map((x) => `${x.get('.alert-heading').text()}: ${x.get('.alert-description').text()}`)).toEqual(['Warning: Synthetic calibration warning.']);
     });
 
     it('tolerates a result without calibration and says so when no ring was drawn', async () => {
         const raw = tarrBody({ contours: { type: 'FeatureCollection', features: [] } });
         delete raw.calibration;
+        ui.sections['result-details'] = true;
         wrapper = mount(SarResult);
         finishRun(parseResult(raw, 'tarr') as TarrResult, tarrMeta, []);
         await nextTick();
         expect(wrapper.get('[data-test=no-bands]').text()).toBe('No rings were drawn.');
-        expect(wrapper.get('[data-test=multiplier]').text()).toBe('Not calibrated for New Zealand.');
+        expect(wrapper.find('[data-test=multiplier]').exists()).toBe(false);
+        expect(wrapper.get('[data-test=tarr-not-calibrated]').text()).toBe('Not calibrated for New Zealand.');
         expect(wrapper.find('[data-test=calibration-note]').exists()).toBe(false);
     });
 

@@ -34,7 +34,12 @@ export const form = reactive({
     profile: '',
     ecoregion: '',
     terrain: '',
+    /** TARR: also draw the plain Koester circle next to each terrain ring. Applies from the next run. */
+    plainCircles: true,
 });
+
+/** Which collapsible boxes are open. Kept here so the choice survives the pane being rebuilt. */
+export const ui = reactive({ sections: {} as Record<string, boolean> });
 
 export const session = reactive({
     run: 'idle' as RunState,
@@ -56,8 +61,8 @@ export const session = reactive({
     markers: null as MarkerChoice[] | null,
     markersLoading: false,
     markersFailed: false,
-    /** The share actions: one at a time. */
-    share: { busy: false, message: '', error: '' },
+    /** The share actions: one at a time. `saved` is true once the KMZ is in Files. */
+    share: { busy: false, status: '', message: '', error: '', saved: false },
     /** The text of the single aria-live region. */
     announcement: '',
 });
@@ -73,8 +78,10 @@ export interface Controller {
     addToDataSync(missions: MissionChoice[]): Promise<void>;
     /** Build a data package on the server, download it and optionally file it in Data Syncs. */
     createPackage(options: { name: string; missions: MissionChoice[] }): Promise<void>;
-    /** Download a zip with the KML and GeoJSON files. */
-    exportFiles(): Promise<void>;
+    /** Upload the result as a KMZ to the user's Files. */
+    saveToFiles(): Promise<void>;
+    /** Open the Files menu. */
+    openFiles(): void;
 }
 
 const noop = (): void => undefined;
@@ -87,7 +94,8 @@ const unbound = (): Controller => ({
     loadMarkers: () => Promise.resolve([]),
     addToDataSync: idle,
     createPackage: idle,
-    exportFiles: idle,
+    saveToFiles: idle,
+    openFiles: noop,
 });
 export const controller: Controller = unbound();
 
@@ -110,10 +118,11 @@ interface Stored {
     profile: string;
     ecoregion: string;
     terrain: string;
+    plainCircles: boolean;
 }
 
 function readStored(storage: StorageLike): Stored {
-    const d: Stored = { mode: 'travel-time', speed: DEFAULT_SPEED, bands: [...DEFAULT_BANDS], radius: DEFAULT_RADIUS, profile: '', ecoregion: '', terrain: '' };
+    const d: Stored = { mode: 'travel-time', speed: DEFAULT_SPEED, bands: [...DEFAULT_BANDS], radius: DEFAULT_RADIUS, profile: '', ecoregion: '', terrain: '', plainCircles: true };
     let raw: unknown;
     try {
         raw = JSON.parse(storage.getItem(STORAGE_KEY) ?? 'null');
@@ -141,7 +150,8 @@ function readStored(storage: StorageLike): Stored {
             if (typeof o.terrain === 'string' && terrainsOf(profile, ecoregion).includes(o.terrain)) terrain = o.terrain;
         }
     }
-    return { mode, speed, bands, radius, profile, ecoregion, terrain };
+    const plainCircles = typeof o.plainCircles === 'boolean' ? o.plainCircles : d.plainCircles;
+    return { mode, speed, bands, radius, profile, ecoregion, terrain, plainCircles };
 }
 
 let stopSaving: WatchHandle | null = null;
@@ -159,8 +169,9 @@ export function bindStorage(storage: StorageLike | null): void {
     form.profile = saved.profile;
     form.ecoregion = saved.ecoregion;
     form.terrain = saved.terrain;
+    form.plainCircles = saved.plainCircles;
     stopSaving = watch(
-        () => [form.mode, form.speed, form.radius, form.bands.join(','), form.profile, form.ecoregion, form.terrain] as const,
+        () => [form.mode, form.speed, form.radius, form.bands.join(','), form.profile, form.ecoregion, form.terrain, form.plainCircles] as const,
         () => {
             try {
                 storage.setItem(STORAGE_KEY, JSON.stringify({
@@ -171,6 +182,7 @@ export function bindStorage(storage: StorageLike | null): void {
                     profile: form.profile,
                     ecoregion: form.ecoregion,
                     terrain: form.terrain,
+                    plainCircles: form.plainCircles,
                 }));
             } catch {
                 // Storage is full or not allowed: the values just are not kept.
@@ -203,6 +215,10 @@ export function setEcoregion(name: string): void {
 
 export function setTerrain(name: string): void {
     form.terrain = name;
+}
+
+export function setPlainCircles(on: boolean): void {
+    form.plainCircles = on;
 }
 
 /** Use a speed preset. The field shows the number as text. */
@@ -283,8 +299,10 @@ export function finishRun(result: AnalysisResult, meta: RunMeta, featureIds: str
     session.meta = meta;
     session.featureIds = [...featureIds];
     session.movedTo = [];
+    session.share.status = '';
     session.share.message = '';
     session.share.error = '';
+    session.share.saved = false;
     session.error = null;
     const n = result.mode === 'tarr' ? result.rings.length : result.contours.length;
     const noun = result.mode === 'tarr' ? (n === 1 ? 'ring' : 'rings') : (n === 1 ? 'contour' : 'contours');
@@ -315,8 +333,10 @@ export function clearAll(): void {
     session.featureIds = [];
     session.movedTo = [];
     session.share.busy = false;
+    session.share.status = '';
     session.share.message = '';
     session.share.error = '';
+    session.share.saved = false;
     session.error = null;
     form.lat = '';
     form.lng = '';
@@ -335,8 +355,10 @@ export function resetAll(): void {
     session.movedTo = [];
     session.tarrAvailable = false;
     session.share.busy = false;
+    session.share.status = '';
     session.share.message = '';
     session.share.error = '';
+    session.share.saved = false;
     session.picking = false;
     session.markerOpen = false;
     session.markers = null;
@@ -352,6 +374,8 @@ export function resetAll(): void {
     form.profile = '';
     form.ecoregion = '';
     form.terrain = '';
+    form.plainCircles = true;
+    ui.sections = {};
 }
 
 // The engine's dense-area refusal

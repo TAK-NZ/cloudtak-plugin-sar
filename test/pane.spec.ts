@@ -36,7 +36,7 @@ beforeEach(() => {
     missions.list.mockResolvedValue(SYNCS);
     spies = {
         run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), loadMarkers: vi.fn(async () => []),
-        addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), exportFiles: vi.fn(async () => undefined),
+        addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), saveToFiles: vi.fn(async () => undefined), openFiles: vi.fn(),
     };
     bindController(spies as unknown as Controller);
 });
@@ -58,41 +58,58 @@ describe('share actions', () => {
         expect(wrapper.find('[data-test=share]').exists()).toBe(true);
     });
 
-    it('show the three buttons and the hints', async () => {
+    it('show the three buttons, and keep the hints in a closed box', async () => {
         const w = await mountShare();
-        expect(w.get('h3').text()).toBe('Share the result');
+        expect(w.get('.slidedown__header').text()).toBe('Save and share');
+        expect(w.get('[data-test=share]').attributes('aria-label')).toBe('Save and share');
+        expect(w.get('[data-test=save-files]').text()).toBe('Save to Files');
         expect(w.get('[data-test=add-to-sync]').text()).toBe('Add to Data Sync');
         expect(w.get('[data-test=create-package]').text()).toBe('Create data package');
-        expect(w.get('[data-test=download-files]').text()).toBe('Download KML and GeoJSON');
+        expect(w.find('[data-test=download-files]').exists()).toBe(false);
+        expect(w.find('[data-test=share-hint]').exists()).toBe(false);
+        await w.get('[data-test=box-share-about] .slidedown__header').trigger('click');
+        expect(w.get('[data-test=share-files-hint]').text()).toContain('stores a KMZ in Files');
         expect(w.get('[data-test=share-hint]').text()).toContain('moves the features into the Data Sync');
         expect(w.text()).toContain('lose the holes');
-        for (const b of w.findAll('button')) expect(b.attributes('style')).toContain('min-height: 44px');
+        for (const b of w.findAll('button')) expect(b.attributes('style') ?? '').toContain('min-height: 44px');
     });
 
-    it('download calls the controller', async () => {
+    it('Save to Files calls the controller, and Open Files appears once something was saved', async () => {
         const w = await mountShare();
-        await w.get('[data-test=download-files]').trigger('click');
-        expect(spies.exportFiles).toHaveBeenCalledTimes(1);
+        expect(w.find('[data-test=open-files]').exists()).toBe(false);
+        await w.get('[data-test=save-files]').trigger('click');
+        expect(spies.saveToFiles).toHaveBeenCalledTimes(1);
+        session.share.saved = true;
+        await nextTick();
+        await w.get('[data-test=open-files]').trigger('click');
+        expect(spies.openFiles).toHaveBeenCalledTimes(1);
     });
 
     it('disable the buttons while an action is busy, and show a status', async () => {
         const w = await mountShare();
         session.share.busy = true;
         await nextTick();
-        for (const id of ['add-to-sync', 'create-package', 'download-files']) expect(w.get(`[data-test=${id}]`).attributes('disabled')).toBeDefined();
+        for (const id of ['save-files', 'add-to-sync', 'create-package']) expect(w.get(`[data-test=${id}]`).attributes('disabled')).toBeDefined();
         expect(w.get('[data-test=share-busy]').attributes('role')).toBe('status');
+        expect(w.get('[data-test=share-busy]').text()).toBe('Working...');
+        session.share.status = 'Uploading to Files...';
+        await nextTick();
+        expect(w.get('[data-test=share-busy]').text()).toBe('Uploading to Files...');
     });
 
     it('show the outcome as text, and an error with the word Error', async () => {
         const w = await mountShare();
         session.share.message = 'Added 4 features to "<i>x</i>".';
         await nextTick();
-        expect(w.get('[data-test=share-message]').text()).toBe('Added 4 features to "<i>x</i>".');
+        expect(w.get('[data-test=share-message] .alert-heading').text()).toBe('Added 4 features to "<i>x</i>".');
         expect(w.get('[data-test=share-message]').find('i').exists()).toBe(false);
+        expect(w.get('[data-test=share-message] .alert').classes()).toContain('alert-success');
         session.share.message = '';
         session.share.error = 'Could not add to "Alpha": not loaded (0 of 1 done)';
         await nextTick();
-        expect(w.get('[data-test=share-error]').text()).toBe('Error: Could not add to "Alpha": not loaded (0 of 1 done)');
+        expect(w.get('[data-test=share-error] .alert-heading').text()).toBe('Error');
+        expect(w.get('[data-test=share-error] .alert-description').text()).toBe('Could not add to "Alpha": not loaded (0 of 1 done)');
+        expect(w.get('[data-test=share-error] .alert').classes()).toContain('alert-danger');
     });
 });
 
@@ -155,7 +172,7 @@ describe('Add to Data Sync', () => {
         const w = await mountShare();
         await w.get('[data-test=add-to-sync]').trigger('click');
         await flushPromises();
-        expect(find('sync-error')?.textContent).toContain('Error: Could not load Data Syncs. db closed');
+        expect(find('sync-error')?.textContent).toContain('ErrorCould not load Data Syncs. db closed');
     });
 });
 
