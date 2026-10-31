@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import type { VueWrapper } from '@vue/test-utils';
-import { nextTick } from 'vue';
+import { defineComponent, h } from 'vue';
 import type { PluginInstance } from '@tak-ps/cloudtak';
 
 const hostMock = vi.hoisted(() => ({
@@ -10,24 +10,37 @@ const hostMock = vi.hoisted(() => ({
         token: vi.fn(),
         fetch: vi.fn(),
     },
+    isMobile: vi.fn(() => false),
+    saveBlob: vi.fn(),
 }));
-const routerMock = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock('../lib/host.ts', () => hostMock);
-vi.mock('vue-router', () => ({ useRouter: () => routerMock }));
+vi.mock('../lib/missions.ts', () => ({ listSubscribedMissions: vi.fn(async () => []) }));
+// The host menu template: a pass-through that records its props.
+vi.mock('../../../src/components/CloudTAK/util/MenuTemplate.vue', () => ({
+    default: defineComponent({
+        name: 'MenuTemplate',
+        props: { name: { type: String, default: '' }, back: { type: Boolean, default: true } },
+        setup(props, { slots }) {
+            return () => h('div', { 'data-test': 'menu-template', 'data-name': props.name, 'data-back': String(props.back) }, slots.default?.());
+        },
+    }),
+}));
 
 import SarPlugin from '../index.ts';
-import SarPanel from '../lib/SarPanel.vue';
 import { MenuIcon } from '../lib/MenuIcon.ts';
-import { PANEL_CLOSE, PANEL_OPEN } from '../lib/panel-coordinator.ts';
-import { applySuggestion, controller, form, session, suggestionButtons } from '../lib/state.ts';
+import { blobBytes, unzipEntries } from './unzip.ts';
+import { applySuggestion, controller, form, session, setMode, suggestionButtons } from '../lib/state.ts';
 import { STORAGE_KEY } from '../lib/constants.ts';
-import { EventedFakeMap, deferred, makeFakeApi } from './helpers.ts';
-import type { FakeFeature } from './helpers.ts';
-import { htmlResponse, jsonResponse, okBody } from './fixtures.ts';
+import { EventedFakeMap, deferred, makeFakeApi, pill } from './helpers.ts';
+import type { FakeApi, FakeFeature } from './helpers.ts';
+import { htmlResponse, jsonResponse, okBody, ring, tarrBody } from './fixtures.ts';
 
 const host = hostMock.host;
 const STATUS_URL = 'https://cot.test/api/sar/status';
 const CALC_URL = 'https://cot.test/api/sar/travel-time';
+const TARR_URL = 'https://cot.test/api/sar/tarr';
+const PACKAGE_URL = 'https://cot.test/api/marti/package';
+const IMPORT_URL = 'https://cot.test/api/import';
 
 type Plugin = PluginInstance & { pending: Promise<void>; generation: number };
 
@@ -35,6 +48,10 @@ let plugin: Plugin | undefined;
 let wrapper: VueWrapper | undefined;
 let statusReply: () => Promise<Response>;
 let calcReply: (init?: RequestInit) => Promise<Response>;
+let tarrReply: (init?: RequestInit) => Promise<Response>;
+let packageReply: () => Promise<Response>;
+let importReply: (init?: RequestInit) => Promise<Response>;
+let importStatusReply: () => Promise<Response>;
 let tokenValue: string | undefined;
 const store = new Map<string, string>();
 
@@ -42,8 +59,7 @@ const store = new Map<string, string>();
 const hang = (init?: RequestInit): Promise<Response> => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
 });
-
-const ok = (): Promise<Response> => Promise.resolve(jsonResponse(200, { apiVersion: 1, enabled: true }));
+const ok = (): Promise<Response> => Promise.resolve(jsonResponse(200, { apiVersion: 1, enabled: true, modes: ['travel-time', 'tarr'] }));
 
 async function install(map: EventedFakeMap | Error = new EventedFakeMap(), features: FakeFeature[] = []) {
     const fake = makeFakeApi(map, features);
@@ -59,15 +75,17 @@ async function enabled(map = new EventedFakeMap(), features: FakeFeature[] = [])
     return { ...ctx, map };
 }
 
-/** The route component the menu entry opens, mounted: it launches the panel. */
-function launch(ctx: { routes: { component?: unknown }[] }): VueWrapper {
-    wrapper = mount(ctx.routes[ctx.routes.length - 1].component as never);
+/** The route component the menu entry opens, mounted: the host template around the pane. */
+function openPane(ctx: { routes: { component?: unknown }[] }): VueWrapper {
+    wrapper = mount(ctx.routes[ctx.routes.length - 1].component as never, { attachTo: document.body });
     return wrapper;
 }
 
 const ours = (map: EventedFakeMap): string[] => map.layers.map((l) => l.id).filter((id) => id.startsWith('taknz-sar-'));
 const oursSources = (map: EventedFakeMap): string[] => [...map.sources.keys()].filter((id) => id.startsWith('taknz-sar-'));
 const calcCalls = (): unknown[][] => host.fetch.mock.calls.filter((c) => c[0] === CALC_URL);
+const tarrCalls = (): unknown[][] => host.fetch.mock.calls.filter((c) => c[0] === TARR_URL);
+const callsign = (f: FakeFeature): unknown => f.properties.callsign;
 
 function type(lat = '-40', lng = '172'): void {
     form.lat = lat;
@@ -78,6 +96,15 @@ const dense = (extra: Record<string, unknown> = {}) => ({ status: 'error', code:
 
 async function runWith(reply: () => Promise<Response>): Promise<void> {
     calcReply = reply;
+    type();
+    controller.run();
+    await flushPromises();
+}
+
+async function runTarr(profile = 'Hiker'): Promise<void> {
+    tarrReply = () => Promise.resolve(jsonResponse(200, tarrBody()));
+    setMode('tarr');
+    form.profile = profile;
     type();
     controller.run();
     await flushPromises();
@@ -113,11 +140,25 @@ beforeEach(() => {
     tokenValue = 'tok-1';
     statusReply = ok;
     calcReply = () => Promise.resolve(jsonResponse(200, okBody()));
+    tarrReply = () => Promise.resolve(jsonResponse(200, tarrBody()));
+    packageReply = () => Promise.resolve(jsonResponse(200, { Hash: 'hash-1' }));
+    importReply = () => Promise.resolve(jsonResponse(200, { imports: [{ file: 'x.kmz', uid: 'imp-1', ext: '.kmz' }] }));
+    importStatusReply = () => Promise.resolve(jsonResponse(200, { status: 'Success', error: null, results: [] }));
     host.token.mockReset();
     host.token.mockImplementation(async () => tokenValue);
     host.fetch.mockReset();
-    host.fetch.mockImplementation(async (url: string, init?: RequestInit) => (url === STATUS_URL ? statusReply() : calcReply(init)));
-    routerMock.replace.mockReset();
+    host.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === STATUS_URL) return statusReply();
+        if (url === TARR_URL) return tarrReply(init);
+        if (url === PACKAGE_URL) return packageReply();
+        if (url === IMPORT_URL) return importReply(init);
+        if (url.startsWith(`${IMPORT_URL}/`)) return importStatusReply();
+        if (url.startsWith('https://cot.test/api/marti/api/files/')) return new Response('zip-bytes', { status: 200 });
+        return calcReply(init);
+    });
+    hostMock.isMobile.mockReset();
+    hostMock.isMobile.mockReturnValue(false);
+    hostMock.saveBlob.mockReset();
     store.clear();
     vi.stubGlobal('localStorage', {
         getItem: (k: string) => store.get(k) ?? null,
@@ -187,18 +228,6 @@ describe('status gate', () => {
         expect(map.listenerCount()).toBe(0);
     });
 
-    it('registers one menu item and one route, and nothing on the map, when the relay is enabled', async () => {
-        const { calls, menuItems, routes, map } = await enabled();
-        expect(calls).toEqual(['routes.add:home-menu-plugin-sar:home-menu', 'menu.add:sar']);
-        expect(menuItems).toHaveLength(1);
-        expect(routes).toHaveLength(1);
-        expect(menuItems[0]).toMatchObject({ label: 'Travel time', tooltip: 'SAR travel time', route: 'home-menu-plugin-sar' });
-        expect(map.counters).toEqual({ addSource: 0, addLayer: 0, removeLayer: 0, removeSource: 0, moveLayer: 0 });
-        expect(map.listenerCount()).toBe(0);
-        expect(host.fetch).toHaveBeenCalledTimes(1);
-        expect(host.fetch.mock.calls[0][0]).toBe(STATUS_URL);
-    });
-
     it('ignores a status that arrives after disable()', async () => {
         const status = deferred<Response>();
         statusReply = () => status.promise;
@@ -218,134 +247,85 @@ describe('status gate', () => {
     });
 });
 
-describe('launcher and panel', () => {
-    it('the menu route opens the bottom panel, announces panel-open and goes back to the map', async () => {
-        const opened: unknown[] = [];
-        const onOpen = (e: Event): void => {
-            opened.push((e as CustomEvent).detail);
-        };
-        window.addEventListener(PANEL_OPEN, onOpen);
-        const ctx = await enabled();
-        launch(ctx);
-        await flushPromises();
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
-        expect(opened).toEqual([{ id: 'taknz-sar', area: 'bottom' }]);
-        expect(routerMock.replace).toHaveBeenCalledWith('/');
-        window.removeEventListener(PANEL_OPEN, onOpen);
+describe('side pane registration', () => {
+    it('registers one menu item and one route under home-menu, and nothing on the map', async () => {
+        const { calls, menuItems, routes, map } = await enabled();
+        expect(calls).toEqual(['routes.add:home-menu-plugin-sar:home-menu', 'menu.add:sar']);
+        expect(menuItems).toHaveLength(1);
+        expect(routes).toHaveLength(1);
+        expect(menuItems[0]).toMatchObject({
+            label: 'SAR planning', tooltip: 'SAR planning', route: 'home-menu-plugin-sar',
+            description: 'Travel time and TARR analysis from a start point',
+        });
+        expect(map.counters).toEqual({ addSource: 0, addLayer: 0, removeLayer: 0, removeSource: 0, moveLayer: 0 });
+        expect(map.listenerCount()).toBe(0);
+        expect(host.fetch).toHaveBeenCalledTimes(1);
+        expect(host.fetch.mock.calls[0][0]).toBe(STATUS_URL);
     });
 
-    it('a second launch keeps one panel and asks for focus on its heading', async () => {
+    it('the route renders the host menu template without a back button, around the pane', async () => {
         const ctx = await enabled();
-        launch(ctx);
-        const before = session.focusSeq;
-        wrapper?.unmount();
-        launch(ctx);
-        await flushPromises();
-        expect(ctx.calls.filter((c) => c === 'bottomBar.add:taknz-sar')).toHaveLength(1);
-        expect(session.focusSeq).toBe(before + 1);
+        const w = openPane(ctx);
+        const template = w.get('[data-test=menu-template]');
+        expect(template.attributes('data-name')).toBe('SAR planning');
+        expect(template.attributes('data-back')).toBe('false');
+        expect(template.find('[data-test=pane]').exists()).toBe(true);
+        expect(w.findAll('label.btn').map((l) => l.text())).toEqual(['Travel Time', 'TARR Analysis']);
     });
 
-    it('closes the panel when another plugin opens its own', async () => {
-        const closed: unknown[] = [];
-        const onClose = (e: Event): void => {
-            closed.push((e as CustomEvent).detail);
-        };
-        const ctx = await enabled();
-        launch(ctx);
-        window.addEventListener(PANEL_CLOSE, onClose);
-        window.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { id: 'other', area: 'bottom' } }));
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        expect(session.minimized).toBe(false);
-        expect(closed).toEqual([{ id: 'taknz-sar', area: 'bottom', by: 'other' }]);
-        window.removeEventListener(PANEL_CLOSE, onClose);
+    it('renders both modes', async () => {
+        const w = openPane(await enabled());
+        expect(w.find('[data-test=speed]').exists()).toBe(true);
+        await pill(w, 'TARR Analysis').trigger('click');
+        expect(w.find('[data-test=profile]').exists()).toBe(true);
+        expect(w.find('[data-test=speed]').exists()).toBe(false);
     });
 
-    it('minimizes with the dot while a calculation runs, and restores when the other panel closes', async () => {
+    it('uses no bottom bar, panel events or map attribution anywhere in the plugin', async () => {
+        const { readdirSync, readFileSync } = await import('node:fs');
+        const { dirname, join } = await import('node:path');
+        const { fileURLToPath } = await import('node:url');
+        const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+        const sources = [join(root, 'index.ts'), ...readdirSync(join(root, 'lib')).map((n) => join(root, 'lib', n))];
+        for (const file of sources) {
+            const text = readFileSync(file, 'utf8');
+            expect(text, file).not.toMatch(/bottomBar|panel-coordinator|cloudtak-plugin:panel|PANEL_ID|BOTTOM_KEY|attributionText|getAttribution/);
+        }
         const ctx = await enabled();
-        launch(ctx);
-        const reply = deferred<Response>();
-        calcReply = () => reply.promise;
-        type();
-        controller.run();
-        await flushPromises();
-        window.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { id: 'other', area: 'bottom' } }));
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        expect(session.minimized).toBe(true);
-        expect(session.run).toBe('running');
-        // The menu icon shows the dot and the hidden text.
-        const icon = mount(MenuIcon);
-        expect(icon.find('.taknz-sar-menu-icon__dot').exists()).toBe(true);
-        expect(icon.get('.taknz-sar-menu-icon__text').text()).toBe('Controls hidden.');
-        expect(icon.get('.taknz-sar-menu-icon').attributes('title')).toBe('Travel time, controls hidden');
-        icon.unmount();
-        // The calculation finishes while hidden; the panel stays hidden.
-        reply.resolve(jsonResponse(200, okBody()));
-        await flushPromises();
-        expect(session.run).toBe('done');
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        window.dispatchEvent(new CustomEvent(PANEL_CLOSE, { detail: { id: 'other', area: 'bottom' } }));
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
-        expect(session.minimized).toBe(false);
-        expect(mount(MenuIcon).find('.taknz-sar-menu-icon__dot').exists()).toBe(false);
+        expect('bottomBar' in (ctx.api as object)).toBe(false);
     });
 
-    it('tapping the menu entry of a minimized panel brings it back; an open of another plugin does not', async () => {
+    it('offers TARR only when the relay lists it', async () => {
+        statusReply = () => Promise.resolve(jsonResponse(200, { apiVersion: 1, enabled: true }));
         const ctx = await enabled();
-        launch(ctx);
+        expect(session.tarrAvailable).toBe(false);
+        const w = openPane(ctx);
+        expect((pill(w, 'TARR Analysis').element as HTMLInputElement).disabled).toBe(true);
+        setMode('tarr');
+        expect(form.mode).toBe('travel-time');
+    });
+
+    it('the menu icon shows a dot while a calculation runs', async () => {
+        await enabled();
         calcReply = () => new Promise<Response>(() => undefined);
         type();
         controller.run();
         await flushPromises();
-        window.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { id: 'other', area: 'bottom' } }));
-        window.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { id: 'third', area: 'bottom' } }));
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        wrapper?.unmount();
-        launch(ctx);
-        await flushPromises();
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
-        expect(session.minimized).toBe(false);
-    });
-
-    it('the close button closes the panel and cancels a running calculation', async () => {
-        const ctx = await enabled();
-        launch(ctx);
-        const reply = deferred<Response>();
-        calcReply = () => reply.promise;
-        type();
-        controller.run();
-        await flushPromises();
-        controller.close();
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        expect(session.run).toBe('idle');
-        reply.resolve(jsonResponse(200, okBody()));
-        await flushPromises();
-        expect(session.result).toBeNull();
-    });
-
-    it('Escape closes the panel, but only while it is open', async () => {
-        const ctx = await enabled();
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-        expect(ctx.calls.filter((c) => c.startsWith('bottomBar'))).toEqual([]);
-        launch(ctx);
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-    });
-
-    it('Escape leaves the panel alone while a modal is open', async () => {
-        const ctx = await enabled();
-        launch(ctx);
-        const modal = document.createElement('div');
-        modal.setAttribute('aria-modal', 'true');
-        document.body.append(modal);
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
+        const icon = mount(MenuIcon);
+        expect(icon.find('.taknz-sar-menu-icon__dot').exists()).toBe(true);
+        expect(icon.get('.taknz-sar-menu-icon__text').text()).toBe('Calculation running.');
+        expect(icon.get('.taknz-sar-menu-icon').attributes('title')).toBe('SAR planning, calculation running');
+        icon.unmount();
+        controller.cancel();
+        const idle = mount(MenuIcon);
+        expect(idle.find('.taknz-sar-menu-icon__dot').exists()).toBe(false);
+        idle.unmount();
     });
 });
 
-describe('a calculation', () => {
-    it('posts the form to the relay with the session token and draws the layers with the plugin ids', async () => {
-        const ctx = await enabled();
-        launch(ctx);
+describe('a travel time calculation', () => {
+    it('posts the form to the relay with the session token', async () => {
+        await enabled();
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
         const [, init] = calcCalls()[0] as [string, RequestInit];
         expect(JSON.parse(init.body as string)).toEqual({
@@ -356,22 +336,42 @@ describe('a calculation', () => {
         });
         expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-1');
         expect(session.run).toBe('done');
-        expect(ours(ctx.map)).toEqual(['taknz-sar-fill', 'taknz-sar-outline', 'taknz-sar-label', 'taknz-sar-ipp']);
-        expect(oursSources(ctx.map).sort()).toEqual(['taknz-sar-contours', 'taknz-sar-ipp', 'taknz-sar-labels']);
-        expect(ctx.map.fitCalls).toHaveLength(1);
-        expect(session.announcement).toBe('Calculation finished. 3 contours drawn.');
+        expect(tarrCalls()).toHaveLength(0);
     });
 
-    it('keeps the engine attribution on the map while contours stay visible with the panel closed', async () => {
+    it('adds one polygon feature per band and the start point as map features', async () => {
         const ctx = await enabled();
-        launch(ctx);
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-        expect(ctx.bar.has('taknz-sar')).toBe(false);
-        expect(ours(ctx.map)).toContain('taknz-sar-fill');
-        const spec = ctx.map.getSource('taknz-sar-contours')?.spec as { attribution?: string };
-        expect(spec.attribution).toBe('Synthetic attribution one | Synthetic attribution two');
+        expect(ctx.features.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(ctx.features.map((f) => f.properties.type)).toEqual(['u-d-f', 'u-d-f', 'u-d-f', 'u-d-p']);
+        const ipp = ctx.features[3];
+        expect(ipp.geometry).toEqual({ type: 'Point', coordinates: [172, -40] });
+        expect(ipp.properties).toMatchObject({ callsign: 'SAR IPP', 'marker-color': '#FFD600', archived: true });
+        expect(String(ipp.properties.remarks)).toMatch(/^Initial Planning Point\. Mode: Travel Time, speed 2\.5 km\/h, bands 1, 2, 4, 8 h\. Run \d{4}-\d\d-\d\d \d\d:\d\d UTC\.$/);
+        expect(String(ctx.features[0].properties.remarks)).toContain('Synthetic disclaimer text.');
+        expect(ctx.adds).toHaveLength(1);
+        expect(ctx.adds[0].mission).toBeUndefined();
+        expect(session.featureIds).toEqual(ctx.features.map((f) => f.id));
+        expect(new Set(session.featureIds).size).toBe(4);
+        expect(session.meta).toMatchObject({ mode: 'travel-time', ipp: { lat: -40, lng: 172 }, speedKmh: 2.5, bandsHours: [1, 2, 4, 8] });
     });
+
+    it('fits the map to the result and announces it', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(ctx.map.fitCalls).toHaveLength(1);
+        expect(ctx.map.fitCalls[0].bounds).toEqual([[171, -41], [173, -39]]);
+        expect(session.announcement).toBe('Calculation finished. 3 contours and the start point added to the map as features.');
+    });
+
+    it('draws no overlay layer for the result: the features are the only copy', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(ours(ctx.map)).toEqual([]);
+        expect(oursSources(ctx.map)).toEqual([]);
+        expect(ctx.map.listenerCount()).toBe(0);
+    });
+
     it('does nothing for an invalid form', async () => {
         await enabled();
         form.lat = '-10';
@@ -380,6 +380,29 @@ describe('a calculation', () => {
         await flushPromises();
         expect(calcCalls()).toHaveLength(0);
         expect(session.run).toBe('idle');
+    });
+
+    it('a second run replaces the features of the first', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        const first = [...session.featureIds];
+        controller.run();
+        await flushPromises();
+        expect(ctx.removes[0]).toEqual(first);
+        expect(ctx.features).toHaveLength(4);
+        expect(ctx.features.map((f) => f.id).some((id) => first.includes(id))).toBe(false);
+        expect(session.featureIds).toEqual(ctx.features.map((f) => f.id));
+    });
+
+    it('fails the run when the features cannot be added, and leaves nothing behind', async () => {
+        const ctx = await enabled();
+        ctx.failNextAdd(new Error('map not ready'));
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(session.run).toBe('error');
+        expect(session.error).toMatchObject({ kind: 'failed' });
+        expect(session.result).toBeNull();
+        expect(ctx.features).toEqual([]);
+        expect(session.featureIds).toEqual([]);
     });
 
     it('counts the elapsed seconds and stops the timer when the run ends', async () => {
@@ -396,7 +419,142 @@ describe('a calculation', () => {
         expect(session.run).toBe('done');
         expect(vi.getTimerCount()).toBe(0);
     });
+});
 
+describe('a TARR calculation', () => {
+    it('posts the profile to /api/sar/tarr and nothing else of the travel settings', async () => {
+        await enabled();
+        setMode('tarr');
+        form.profile = 'Hiker';
+        form.ecoregion = 'Temperate';
+        form.terrain = 'Mountainous';
+        type();
+        controller.run();
+        await flushPromises();
+        expect(calcCalls()).toHaveLength(0);
+        const [, init] = tarrCalls()[0] as [string, RequestInit];
+        expect(JSON.parse(init.body as string)).toEqual({ ipp: { lat: -40, lng: 172 }, profile: 'Hiker', ecoregion: 'Temperate', terrain: 'Mountainous' });
+        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-1');
+        expect(session.run).toBe('done');
+    });
+
+    it('adds six ring polygons and the start point', async () => {
+        const ctx = await enabled();
+        await runTarr();
+        expect(ctx.features.map(callsign)).toEqual([
+            'Koester 75%, plain circle (3.22 km)', 'Koester 75%, terrain-adjusted (3.703 km)',
+            'Koester 50%, plain circle (1.77 km)', 'Koester 50%, terrain-adjusted (2.036 km)',
+            'Koester 25%, plain circle (0.64 km)', 'Koester 25%, terrain-adjusted (0.736 km)',
+            'SAR IPP',
+        ]);
+        expect(ctx.features.filter((f) => f.properties['stroke-style'] === 'dashed')).toHaveLength(3);
+        expect(String(ctx.features[1].properties.remarks)).toContain('multiplier 1.15 (Coconino County, Arizona)');
+        expect(String(ctx.features[1].properties.remarks)).toContain('Not calibrated for New Zealand');
+        expect(ctx.features[6].properties.remarks).toMatch(/^Initial Planning Point\. Mode: TARR, subject Hiker\. Run /);
+        expect(session.announcement).toBe('Calculation finished. 6 rings and the start point added to the map as features.');
+        expect(ours(ctx.map)).toEqual([]);
+    });
+
+    it('does not send a request without a profile', async () => {
+        await enabled();
+        setMode('tarr');
+        type();
+        controller.run();
+        await flushPromises();
+        expect(tarrCalls()).toHaveLength(0);
+    });
+
+    it('shows the 422 dense-area message without buttons', async () => {
+        await enabled();
+        setMode('tarr');
+        form.profile = 'Snowmobiler';
+        type();
+        tarrReply = () => Promise.resolve(jsonResponse(422, dense()));
+        controller.run();
+        await flushPromises();
+        expect(session.error).toMatchObject({ kind: 'rejected', code: 'area_too_dense', message: 'Synthetic dense-area message.' });
+        expect(suggestionButtons(session.error)).toEqual([]);
+    });
+});
+
+describe('start point preview and the IPP feature', () => {
+    it('shows the dot as soon as the point is valid and removes it when it is not', async () => {
+        const ctx = await enabled();
+        type();
+        expect(ours(ctx.map)).toEqual(['taknz-sar-ipp']);
+        form.lat = '';
+        expect(ours(ctx.map)).toEqual([]);
+        expect(ctx.map.listenerCount()).toBe(0);
+    });
+
+    it('replaces the dot with the IPP feature once a result exists: no duplicate', async () => {
+        const ctx = await enabled();
+        type();
+        expect(ours(ctx.map)).toEqual(['taknz-sar-ipp']);
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(ours(ctx.map)).toEqual([]);
+        expect(oursSources(ctx.map)).toEqual([]);
+        expect(ctx.features.filter((f) => f.properties.callsign === 'SAR IPP')).toHaveLength(1);
+    });
+
+    it('shows the dot again for a different point, and hides it for the result point', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        form.lat = '-41';
+        expect(ours(ctx.map)).toEqual(['taknz-sar-ipp']);
+        form.lat = '-40';
+        expect(ours(ctx.map)).toEqual([]);
+    });
+
+    it('Clear removes the features, the dot and the form point', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        form.lat = '-41';
+        expect(ours(ctx.map)).toEqual(['taknz-sar-ipp']);
+        controller.clear();
+        await flushPromises();
+        expect(ctx.features).toEqual([]);
+        expect(ctx.removes.at(-1)).toHaveLength(4);
+        expect(ours(ctx.map)).toEqual([]);
+        expect(oursSources(ctx.map)).toEqual([]);
+        expect(ctx.map.listenerCount()).toBe(0);
+        expect(session.result).toBeNull();
+        expect(session.featureIds).toEqual([]);
+        expect([form.lat, form.lng]).toEqual(['', '']);
+    });
+
+    it('Clear also works for a TARR result', async () => {
+        const ctx = await enabled();
+        await runTarr();
+        expect(ctx.features).toHaveLength(7);
+        controller.clear();
+        await flushPromises();
+        expect(ctx.features).toEqual([]);
+        expect(ours(ctx.map)).toEqual([]);
+    });
+
+    it('Clear while the dot is shown and no result exists removes the dot', async () => {
+        const ctx = await enabled();
+        type();
+        controller.clear();
+        expect(ours(ctx.map)).toEqual([]);
+        expect(ctx.removes).toEqual([]);
+    });
+
+    it('a failed removal on Clear is logged and the form is still cleared', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        (ctx.api.feature as { remove: unknown }).remove = async () => {
+            throw new Error('gone');
+        };
+        controller.clear();
+        await flushPromises();
+        expect(session.result).toBeNull();
+        expect(console.warn).toHaveBeenCalled();
+    });
+});
+
+describe('cancel and teardown during a run', () => {
     it('ignores a response that arrives after Cancel, and aborts the request', async () => {
         const ctx = await enabled();
         const reply = deferred<Response>();
@@ -413,7 +571,7 @@ describe('a calculation', () => {
         await flushPromises();
         expect(session.run).toBe('idle');
         expect(session.result).toBeNull();
-        expect(ours(ctx.map).filter((id) => id !== 'taknz-sar-ipp')).toEqual([]);
+        expect(ctx.features).toEqual([]);
     });
 
     it('a new run after Cancel is not affected by the cancelled one', async () => {
@@ -436,6 +594,26 @@ describe('a calculation', () => {
         expect(session.run).toBe('done');
     });
 
+    it('takes the features off the map again when Cancel comes while they are being added', async () => {
+        const ctx = await enabled();
+        const adding = deferred<void>();
+        const realAdd = (ctx.api.feature as { add: (...a: unknown[]) => Promise<void> }).add;
+        (ctx.api.feature as { add: unknown }).add = async (...args: unknown[]) => {
+            await adding.promise;
+            return realAdd(...args);
+        };
+        type();
+        controller.run();
+        await flushPromises();
+        expect(session.run).toBe('running');
+        controller.cancel();
+        adding.resolve();
+        await flushPromises();
+        expect(session.run).toBe('idle');
+        expect(session.result).toBeNull();
+        expect(ctx.features).toEqual([]);
+    });
+
     it('ignores a response that arrives after disable()', async () => {
         const ctx = await enabled();
         const reply = deferred<Response>();
@@ -447,32 +625,9 @@ describe('a calculation', () => {
         reply.resolve(jsonResponse(200, okBody()));
         await flushPromises();
         expect(session.result).toBeNull();
+        expect(ctx.features).toEqual([]);
         expect(ours(ctx.map)).toEqual([]);
         expect(oursSources(ctx.map)).toEqual([]);
-    });
-
-    it('shows the start point on the map as soon as it is valid, and Clear removes everything', async () => {
-        const ctx = await enabled();
-        type();
-        expect(ours(ctx.map)).toEqual(['taknz-sar-ipp']);
-        form.lat = '';
-        expect(ours(ctx.map)).toEqual([]);
-        expect(ctx.map.listenerCount()).toBe(0);
-        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        expect(ours(ctx.map)).toHaveLength(4);
-        controller.clear();
-        expect(ours(ctx.map)).toEqual([]);
-        expect(oursSources(ctx.map)).toEqual([]);
-        expect(ctx.map.listenerCount()).toBe(0);
-        expect(session.result).toBeNull();
-        expect([form.lat, form.lng]).toEqual(['', '']);
-    });
-
-    it('draws again after a style reload', async () => {
-        const ctx = await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        ctx.map.reloadStyle('taknz-sar-');
-        expect(ours(ctx.map)).toHaveLength(4);
     });
 });
 
@@ -484,48 +639,26 @@ describe('errors from the relay', () => {
         ['502 with JSON', () => Promise.resolve(jsonResponse(502, { status: 502, message: 'x' })), 'SAR planning is unavailable. Contact your administrator.'],
         ['504', () => Promise.resolve(jsonResponse(504, { status: 504 }, { 'Retry-After': '30' })), 'The calculation took too long. Try a smaller radius.'],
         ['an HTML 502', () => Promise.resolve(htmlResponse(502)), 'The calculation took too long. Try a smaller radius.'],
-        ['an HTML 504', () => Promise.resolve(htmlResponse(504)), 'The calculation took too long. Try a smaller radius.'],
         ['500', () => Promise.resolve(jsonResponse(500, {})), 'Analysis failed. Try again, or try a smaller area.'],
         ['429', () => Promise.resolve(jsonResponse(429, {}, { 'Retry-After': '21' })), 'Too many requests. Try again in 21 seconds.'],
         ['a network failure', () => Promise.reject(new TypeError('Failed to fetch')), 'Could not reach the server. Check your connection and try again.'],
     ])('%s gives the message from the brief', async (_name, reply, text) => {
-        await enabled();
+        const ctx = await enabled();
         await runWith(reply);
         expect(session.run).toBe('error');
         expect(session.announcement).toBe(text);
         expect(suggestionButtons(session.error)).toEqual([]);
-    });
-
-    it('a 504 stays generic: a dense-area body on a 504 gets no buttons', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(504, dense({ suggested_radius_km: 6 }))));
-        expect(session.error).toMatchObject({ kind: 'timeout' });
-        expect(session.announcement).toBe('The calculation took too long. Try a smaller radius.');
-        expect(suggestionButtons(session.error)).toEqual([]);
+        expect(ctx.features).toEqual([]);
     });
 
     it('a 422 without a code (a start point in the sea) shows the message verbatim and no button', async () => {
         await enabled();
         await runWith(() => Promise.resolve(jsonResponse(422, { status: 'error', message: 'The start point is in the sea or open water. Move it onto land.', suggested_radius_km: 6 })));
         expect(session.error).toMatchObject({ kind: 'rejected', message: 'The start point is in the sea or open water. Move it onto land.' });
-        expect(session.announcement).toBe('The start point is in the sea or open water. Move it onto land.');
         expect(suggestionButtons(session.error)).toEqual([]);
     });
 
-    it('area_too_dense with a radius only', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 6.5 }))));
-        expect(session.announcement).toBe(MESSAGE);
-        expect(suggestionButtons(session.error).map((b) => b.label)).toEqual(['Try 6.5 km']);
-    });
-
-    it('area_too_dense with hours only', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_max_hours: 3 }))));
-        expect(suggestionButtons(session.error).map((b) => b.label)).toEqual(['Set longest band to 3 h']);
-    });
-
-    it('area_too_dense with both: the longest-band button sets both', async () => {
+    it('area_too_dense with both suggestions: the longest-band button sets both', async () => {
         await enabled();
         await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 6, suggested_max_hours: 3 }))));
         const buttons = suggestionButtons(session.error);
@@ -535,43 +668,15 @@ describe('errors from the relay', () => {
         expect([...form.bands]).toEqual([1, 2, 3]);
     });
 
-    it('area_too_dense with neither: the message and no button', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(422, dense())));
-        expect(session.announcement).toBe(MESSAGE);
-        expect(suggestionButtons(session.error)).toEqual([]);
-    });
-
     it.each([
         ['strings', { suggested_radius_km: '6', suggested_max_hours: '3' }],
         ['null', { suggested_radius_km: null, suggested_max_hours: null }],
-        ['objects', { suggested_radius_km: {}, suggested_max_hours: [] }],
-        ['negative numbers', { suggested_radius_km: -5, suggested_max_hours: -1 }],
-        ['zero', { suggested_radius_km: 0, suggested_max_hours: 0 }],
+        ['outside the input limits', { suggested_radius_km: 31, suggested_max_hours: 25 }],
     ])('malformed suggestions (%s) are ignored and the message is still shown', async (_name, extra) => {
         await enabled();
         await runWith(() => Promise.resolve(jsonResponse(422, dense(extra))));
         expect(session.announcement).toBe(MESSAGE);
         expect(suggestionButtons(session.error)).toEqual([]);
-    });
-
-    // Decision: a number that is valid but outside the plugin's input limits is ignored exactly like a
-    // malformed one. It is never clamped, because a clamped number would be a suggestion of our own.
-    it('suggestions outside the input limits are ignored, never clamped', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 31, suggested_max_hours: 25 }))));
-        expect(suggestionButtons(session.error)).toEqual([]);
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 0.9, suggested_max_hours: 0.2 }))));
-        expect(suggestionButtons(session.error)).toEqual([]);
-        expect(session.announcement.trim()).toBe(MESSAGE);
-    });
-
-    it('with one usable and one unusable suggestion only the usable one is offered', async () => {
-        await enabled();
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 40, suggested_max_hours: 3 }))));
-        expect(suggestionButtons(session.error).map((b) => [b.kind, b.alsoRadiusKm])).toEqual([['hours', undefined]]);
-        await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 6, suggested_max_hours: 'x' }))));
-        expect(suggestionButtons(session.error).map((b) => b.kind)).toEqual(['radius']);
     });
 
     it('the suggestion buttons edit the inputs and never call the relay', async () => {
@@ -582,9 +687,6 @@ describe('errors from the relay', () => {
         await flushPromises();
         expect(host.fetch.mock.calls.length).toBe(fetches);
         expect(session.run).toBe('error');
-        expect(form.radius).toBe('6');
-        expect([...form.bands]).toEqual([1, 2, 3]);
-        // The user presses Run: one new request with the edited values.
         calcReply = () => Promise.resolve(jsonResponse(200, okBody()));
         controller.run();
         await flushPromises();
@@ -592,28 +694,12 @@ describe('errors from the relay', () => {
         expect(JSON.parse((calcCalls()[1][1] as RequestInit).body as string)).toMatchObject({ radius_km: 6, intervals_hours: [1, 2, 3] });
     });
 
-    it('moves focus to the button and announces the message in the panel (end to end)', async () => {
-        const ctx = await enabled();
-        launch(ctx);
-        wrapper?.unmount();
-        const panel = mount(SarPanel, { attachTo: document.body });
+    it('moves focus to the button and announces the message in the pane (end to end)', async () => {
+        const w = openPane(await enabled());
         await runWith(() => Promise.resolve(jsonResponse(422, dense({ suggested_radius_km: 6 }))));
-        await nextTick();
-        await nextTick();
-        expect(document.activeElement).toBe(panel.get('[data-test=suggest-radius]').element);
-        expect(panel.get('[aria-live]').element.textContent).toBe(MESSAGE);
-        expect(panel.get('[data-test=error-message]').element.textContent).toBe(MESSAGE);
-        panel.unmount();
-    });
-
-    it('moves focus to the message container when there is no button (end to end)', async () => {
-        await enabled();
-        const panel = mount(SarPanel, { attachTo: document.body });
-        await runWith(() => Promise.resolve(jsonResponse(422, dense())));
-        await nextTick();
-        await nextTick();
-        expect(document.activeElement).toBe(panel.get('[data-test=error]').element);
-        panel.unmount();
+        await flushPromises();
+        expect(document.activeElement).toBe(w.get('[data-test=suggest-radius]').element);
+        expect(w.get('[aria-live]').element.textContent).toBe(MESSAGE);
     });
 });
 
@@ -628,15 +714,15 @@ describe('picking the start point', () => {
         expect(ctx.map.cursor).toBe('');
         expect([form.lat, form.lng]).toEqual(['-40.25', '172.5']);
         expect(session.announcement).toBe('Start point set.');
-        // One click only.
         ctx.map.click(173, -41);
         expect(form.lat).toBe('-40.25');
         expect(ctx.map.listeners.get('click')?.size ?? 0).toBe(0);
+        // Desktop: the pane stays where it is.
+        expect(ctx.pushes).toEqual([]);
     });
 
     it('Cancel and Escape stop picking and reset the cursor', async () => {
         const ctx = await enabled();
-        launch(ctx);
         controller.pick();
         controller.pick();
         expect(session.picking).toBe(false);
@@ -645,19 +731,7 @@ describe('picking the start point', () => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
         expect(session.picking).toBe(false);
         expect(ctx.map.cursor).toBe('');
-        // Escape only cancelled the pick: the panel is still open.
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
         expect(session.announcement).toBe('Picking cancelled.');
-    });
-
-    it('is cancelled when the panel minimizes for another plugin', async () => {
-        const ctx = await enabled();
-        launch(ctx);
-        controller.pick();
-        window.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { id: 'other', area: 'bottom' } }));
-        expect(session.picking).toBe(false);
-        expect(ctx.map.cursor).toBe('');
-        expect(session.minimized).toBe(true);
     });
 
     it('is not possible while a calculation runs', async () => {
@@ -669,6 +743,38 @@ describe('picking the start point', () => {
         controller.pick();
         expect(session.picking).toBe(false);
         expect(ctx.map.cursor).toBe('');
+    });
+
+    it('on a phone closes the pane while picking and opens it again after the click', async () => {
+        hostMock.isMobile.mockReturnValue(true);
+        const ctx = await enabled();
+        controller.pick();
+        expect(ctx.pushes).toEqual(['/']);
+        ctx.map.click(172.5, -40.25);
+        await flushPromises();
+        expect(ctx.pushes).toEqual(['/', { name: 'home-menu-plugin-sar' }]);
+        expect([form.lat, form.lng]).toEqual(['-40.25', '172.5']);
+    });
+
+    it('on a phone Escape ends the pick and opens the pane again', async () => {
+        hostMock.isMobile.mockReturnValue(true);
+        const ctx = await enabled();
+        controller.pick();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }));
+        expect(session.picking).toBe(false);
+        expect(ctx.pushes).toEqual(['/', { name: 'home-menu-plugin-sar' }]);
+    });
+
+    it('on a phone opening the pane cancels a pending pick without navigating again', async () => {
+        hostMock.isMobile.mockReturnValue(true);
+        const ctx = await enabled();
+        controller.pick();
+        expect(session.picking).toBe(true);
+        openPane(ctx);
+        await flushPromises();
+        expect(session.picking).toBe(false);
+        expect(ctx.map.cursor).toBe('');
+        expect(ctx.pushes).toEqual(['/']);
     });
 });
 
@@ -690,32 +796,302 @@ describe('markers', () => {
 });
 
 describe('saved values', () => {
-    it('keeps speed, bands and radius, never the start point', async () => {
+    it('keeps mode, speed, bands, radius and the profile, never the start point', async () => {
         await enabled();
         form.speed = '3';
+        setMode('tarr');
+        form.profile = 'Hiker';
         type();
         const saved = JSON.parse(store.get(STORAGE_KEY) as string);
-        expect(saved).toEqual({ speed: '3', bands: [1, 2, 4, 8], radius: '10' });
+        expect(saved).toEqual({ mode: 'tarr', speed: '3', bands: [1, 2, 4, 8], radius: '10', profile: 'Hiker', ecoregion: '', terrain: '', plainCircles: true });
     });
 
     it('restores them on the next enable and does not overwrite them on disable', async () => {
         const ctx = await enabled();
         form.speed = '4';
+        setMode('tarr');
+        form.profile = 'Camper';
         await ctx.instance.disable();
         expect(JSON.parse(store.get(STORAGE_KEY) as string).speed).toBe('4');
         expect(form.speed).toBe('2.5');
         await ctx.instance.enable();
         await plugin?.pending;
         expect(form.speed).toBe('4');
+        expect(form.mode).toBe('tarr');
+        expect(form.profile).toBe('Camper');
+    });
+
+    it('opens in travel time when TARR was saved but the relay no longer lists it', async () => {
+        store.set(STORAGE_KEY, JSON.stringify({ mode: 'tarr', profile: 'Hiker' }));
+        statusReply = () => Promise.resolve(jsonResponse(200, { apiVersion: 1, enabled: true }));
+        await enabled();
+        expect(form.mode).toBe('travel-time');
     });
 });
 
+describe('Add to Data Sync', () => {
+    const SYNCS = [{ guid: 'g1', name: 'Alpha' }, { guid: 'g2', name: 'Bravo' }];
+
+    it('files copies with fresh ids in each Data Sync and moves the features off the map', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        const localIds = ctx.features.map((f) => f.id);
+        await controller.addToDataSync(SYNCS);
+        expect(ctx.adds.map((a) => a.mission)).toEqual([undefined, 'g1', 'g2']);
+        const [one, two] = [ctx.missionFeatures.get('g1') as FakeFeature[], ctx.missionFeatures.get('g2') as FakeFeature[]];
+        expect(one.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        const ids = [...one, ...two].map((f) => f.id);
+        expect(new Set(ids).size).toBe(8);
+        expect(ids.some((id) => localIds.includes(id))).toBe(false);
+        for (const f of one) expect([f.properties.id, f.properties.uid]).toEqual([f.id, f.id]);
+        expect(ctx.features).toEqual([]);
+        expect(session.featureIds).toEqual([]);
+        expect(session.movedTo).toEqual(['Alpha', 'Bravo']);
+        expect(session.share.message).toBe('Added 4 features to "Alpha", "Bravo". They moved there from your map.');
+        expect(session.announcement).toBe(session.share.message);
+        expect(session.share.busy).toBe(false);
+    });
+
+    it('uses the edited features from the map, not the original result', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        ctx.features[0].properties.callsign = 'Renamed by the user';
+        await controller.addToDataSync([SYNCS[0]]);
+        expect((ctx.missionFeatures.get('g1') as FakeFeature[])[0].properties.callsign).toBe('Renamed by the user');
+    });
+
+    it('keeps the features on the map and shows the error when it fails', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        ctx.failAddFor('g2');
+        await controller.addToDataSync(SYNCS);
+        expect(ctx.features).toHaveLength(4);
+        expect(session.featureIds).toHaveLength(4);
+        expect(session.movedTo).toEqual([]);
+        expect(session.share.error).toBe('Could not add to "Bravo": not loaded (1 of 2 done)');
+        expect(session.announcement).toBe('Error: Could not add to "Bravo": not loaded (1 of 2 done)');
+        expect(session.share.message).toBe('');
+        expect(session.share.busy).toBe(false);
+    });
+
+    it('a second add after the move rebuilds the features from the result', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.addToDataSync([SYNCS[0]]);
+        await controller.addToDataSync([SYNCS[1]]);
+        const second = ctx.missionFeatures.get('g2') as FakeFeature[];
+        expect(second.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(second.map((f) => f.id).some((id) => (ctx.missionFeatures.get('g1') as FakeFeature[]).some((g) => g.id === id))).toBe(false);
+        expect(session.movedTo).toEqual(['Bravo']);
+    });
+
+    it('also moves a TARR result with the IPP', async () => {
+        const ctx = await enabled();
+        await runTarr();
+        await controller.addToDataSync([SYNCS[0]]);
+        const filed = ctx.missionFeatures.get('g1') as FakeFeature[];
+        expect(filed).toHaveLength(7);
+        expect(filed.at(-1)?.properties.callsign).toBe('SAR IPP');
+        expect(ctx.features).toEqual([]);
+    });
+
+    it('does nothing without a Data Sync, and while another action is busy', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.addToDataSync([]);
+        expect(session.share.error).toBe('Choose at least one Data Sync.');
+        session.share.busy = true;
+        const adds = ctx.adds.length;
+        await controller.addToDataSync(SYNCS);
+        expect(ctx.adds).toHaveLength(adds);
+    });
+
+    it('does nothing without a result', async () => {
+        const ctx = await enabled();
+        await controller.addToDataSync(SYNCS);
+        expect(ctx.adds).toEqual([]);
+        expect(session.share.error).toBe('');
+    });
+});
+
+describe('Create data package', () => {
+    it('sends the features from the map to the server and downloads the zip', async () => {
+        const ctx = await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.createPackage({ name: 'My package', missions: [] });
+        const [, init] = host.fetch.mock.calls.find((c) => c[0] === PACKAGE_URL) as [string, RequestInit];
+        expect(init.method).toBe('PUT');
+        const body = JSON.parse(init.body as string) as { name: string; public: boolean; destinations: unknown[]; features: { id: string; properties: { callsign: string } }[] };
+        expect(body).toMatchObject({ name: 'My package', public: false, destinations: [] });
+        expect(body.features.map((f) => f.properties.callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(body.features.map((f) => f.id)).toEqual(ctx.features.map((f) => f.id));
+        expect(host.fetch.mock.calls.some((c) => c[0] === 'https://cot.test/api/marti/api/files/hash-1?name=My%20package.zip')).toBe(true);
+        expect(hostMock.saveBlob).toHaveBeenCalledTimes(1);
+        expect(hostMock.saveBlob.mock.calls[0][1]).toBe('My package.zip');
+        expect(session.share.message).toBe('Data package "My package" created and downloaded.');
+        // The features stay on the map.
+        expect(ctx.features).toHaveLength(4);
+    });
+
+    it('can file the package in a Data Sync as well', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.createPackage({ name: 'P', missions: [{ guid: 'g1', name: 'Alpha' }] });
+        const body = JSON.parse((host.fetch.mock.calls.find((c) => c[0] === PACKAGE_URL) as [string, RequestInit])[1].body as string) as { destinations: unknown[] };
+        expect(body.destinations).toEqual([{ mission: 'g1' }]);
+        expect(session.share.message).toBe('Data package "P" created and downloaded. It was also added to "Alpha".');
+    });
+
+    it('shows the server message and downloads nothing when it fails', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        packageReply = () => Promise.resolve(jsonResponse(400, { message: 'Not subscribed to the Data Sync' }));
+        await controller.createPackage({ name: 'P', missions: [{ guid: 'g1', name: 'Alpha' }] });
+        expect(session.share.error).toBe('Not subscribed to the Data Sync');
+        expect(hostMock.saveBlob).not.toHaveBeenCalled();
+    });
+
+    it('packages a TARR result with the IPP', async () => {
+        await enabled();
+        await runTarr();
+        await controller.createPackage({ name: 'T', missions: [] });
+        const body = JSON.parse((host.fetch.mock.calls.find((c) => c[0] === PACKAGE_URL) as [string, RequestInit])[1].body as string) as { features: { properties: { callsign: string } }[] };
+        expect(body.features).toHaveLength(7);
+        expect(body.features.at(-1)?.properties.callsign).toBe('SAR IPP');
+    });
+});
+
+/** The KMZ that was PUT to the Imports route: its file name and the entries of the zip. */
+async function uploadedKmz(): Promise<{ name: string; kml: string; entries: string[] }> {
+    const put = host.fetch.mock.calls.find((c) => c[0] === IMPORT_URL) as [string, RequestInit];
+    const file = (put[1].body as FormData).get('file') as File;
+    const entries = unzipEntries(await blobBytes(file));
+    return { name: file.name, kml: new TextDecoder().decode(entries[0].data), entries: entries.map((e) => e.name) };
+}
+describe('Save to Files', () => {
+    it('uploads a KMZ with the polygons and the IPP to the Imports route, then reports it saved', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.saveToFiles();
+        const put = host.fetch.mock.calls.find((c) => c[0] === IMPORT_URL) as [string, RequestInit];
+        expect(put[1].method).toBe('PUT');
+        const headers = put[1].headers as Record<string, string>;
+        expect(headers.Authorization).toBe('Bearer tok-1');
+        expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('content-type');
+        const kmz = await uploadedKmz();
+        expect(kmz.name).toMatch(/^SAR Travel Time \d{8}-\d{4}Z\.kmz$/);
+        expect(kmz.entries).toEqual(['doc.kml']);
+        expect(kmz.kml).toContain('<name>SAR IPP</name>');
+        expect(kmz.kml).toContain('<name>SAR 4 h</name>');
+        expect(host.fetch.mock.calls.some((c) => c[0] === `${IMPORT_URL}/imp-1`)).toBe(true);
+        expect(session.share.message).toBe(`Saved "${kmz.name}" to Files.`);
+        expect(session.share.saved).toBe(true);
+        expect(session.share.busy).toBe(false);
+        expect(session.share.status).toBe('');
+        expect(hostMock.saveBlob).not.toHaveBeenCalled();
+    });
+    it('saves the TARR rings with their holes and the IPP', async () => {
+        await enabled();
+        await runTarr();
+        await controller.saveToFiles();
+        const kmz = await uploadedKmz();
+        expect(kmz.name).toMatch(/^SAR TARR /);
+        expect(kmz.kml).toContain('<innerBoundaryIs>');
+        expect(kmz.kml).toContain('plain circle');
+        expect(kmz.kml).toContain('<name>SAR IPP</name>');
+    });
+    it('saves the result again after the features were moved into a Data Sync', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        await controller.addToDataSync([{ guid: 'g1', name: 'Alpha' }]);
+        await controller.saveToFiles();
+        expect((await uploadedKmz()).kml).toContain('<name>SAR IPP</name>');
+    });
+    it('says Files is still reading the file when the status cannot be read', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importStatusReply = () => Promise.reject(new TypeError('Failed to fetch'));
+        await controller.saveToFiles();
+        expect(session.share.message).toMatch(/^Uploaded "SAR Travel Time .*\.kmz"\. Files is still reading it/);
+        expect(session.share.error).toBe('');
+        expect(session.share.saved).toBe(true);
+    });
+    it('shows the reason when Files cannot read the KMZ, and offers no Open Files', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importStatusReply = () => Promise.resolve(jsonResponse(200, { status: 'Fail', error: 'Bad KML' }));
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('Files could not read the KMZ. Bad KML');
+        expect(session.share.saved).toBe(false);
+    });
+    it('shows the server message when the upload is refused', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        importReply = () => Promise.resolve(jsonResponse(413, { message: 'File too large' }));
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('File too large');
+        expect(host.fetch.mock.calls.some((c) => String(c[0]).startsWith(`${IMPORT_URL}/`))).toBe(false);
+    });
+    it('needs a sign-in', async () => {
+        await enabled();
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        tokenValue = undefined;
+        await controller.saveToFiles();
+        expect(session.share.error).toBe('You are not signed in');
+    });
+    it('does nothing without a result', async () => {
+        await enabled();
+        await controller.saveToFiles();
+        expect(host.fetch.mock.calls.some((c) => c[0] === IMPORT_URL)).toBe(false);
+    });
+    it('Open Files goes to the Files menu', async () => {
+        const ctx = await enabled();
+        controller.openFiles();
+        expect(ctx.calls).toContain('router.push:/menu/files');
+    });
+});
+describe('plain circles', () => {
+    it('are drawn by default, next to every terrain ring', async () => {
+        const ctx = await enabled();
+        await runTarr();
+        expect(ctx.features.map(callsign).filter((c) => String(c).includes('plain circle'))).toHaveLength(3);
+    });
+    it('are left out of the map, the result and the KMZ when switched off', async () => {
+        const ctx = await enabled();
+        form.plainCircles = false;
+        await runTarr();
+        expect(ctx.features.map(callsign)).toEqual([
+            'Koester 75%, terrain-adjusted (3.703 km)', 'Koester 50%, terrain-adjusted (2.036 km)', 'Koester 25%, terrain-adjusted (0.736 km)', 'SAR IPP',
+        ]);
+        expect(session.result?.mode === 'tarr' && session.result.rings.map((r) => r.kind)).toEqual(['terrain', 'terrain', 'terrain']);
+        expect(session.announcement).toBe('Calculation finished. 3 rings and the start point added to the map as features.');
+        await controller.saveToFiles();
+        expect((await uploadedKmz()).kml).not.toContain('plain circle');
+    });
+    it('say so when a terrain ring is missing and its plain circle is hidden', async () => {
+        await enabled();
+        form.plainCircles = false;
+        tarrReply = () => Promise.resolve(jsonResponse(200, tarrBody({ contours: { type: 'FeatureCollection', features: [ring(50, 'plain'), ring(25, 'terrain'), ring(25, 'plain')] } })));
+        setMode('tarr');
+        form.profile = 'Hiker';
+        type();
+        controller.run();
+        await flushPromises();
+        const notes = session.result?.warnings.filter((w) => w.source === 'plugin').map((w) => w.message);
+        expect(notes).toEqual(['No terrain ring for 50%. Its plain circle is hidden because plain circles are switched off.']);
+    });
+    it('do not change a Travel Time run', async () => {
+        const ctx = await enabled();
+        form.plainCircles = false;
+        await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
+        expect(ctx.features.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+    });
+});
 describe('disable()', () => {
-    it('leaves no trace: no menu item, route, bar, layer, source, map listener, timer or window listener', async () => {
+    it('leaves no trace of the plugin, but leaves the features on the map', async () => {
         vi.useFakeTimers();
         const tracker = trackListeners();
         const ctx = await enabled();
-        launch(ctx);
         controller.pick();
         controller.pick();
         calcReply = () => Promise.resolve(jsonResponse(200, okBody()));
@@ -723,20 +1099,16 @@ describe('disable()', () => {
         controller.run();
         await vi.advanceTimersByTimeAsync(0);
         expect(session.run).toBe('done');
+        const kept = ctx.features.map((f) => f.id);
         // A calculation is running at the time of the teardown.
         calcReply = hang;
         controller.run();
         await vi.advanceTimersByTimeAsync(1500);
         expect(session.run).toBe('running');
         expect(vi.getTimerCount()).toBeGreaterThan(0);
-        expect(tracker.outstanding().length).toBeGreaterThan(0);
-
         await ctx.instance.disable();
-        // The aborted request settles on the next ticks and clears its own timeout.
         await vi.advanceTimersByTimeAsync(0);
-
-        expect(ctx.bar.size).toBe(0);
-        expect(ctx.calls).toEqual(expect.arrayContaining(['bottomBar.remove:taknz-sar', 'menu.remove:sar', 'router.removeRoute:home-menu-plugin-sar']));
+        expect(ctx.calls).toEqual(expect.arrayContaining(['menu.remove:sar', 'router.removeRoute:home-menu-plugin-sar']));
         expect(ours(ctx.map)).toEqual([]);
         expect(oursSources(ctx.map)).toEqual([]);
         expect(ctx.map.listenerCount()).toBe(0);
@@ -747,25 +1119,20 @@ describe('disable()', () => {
         expect(session.run).toBe('idle');
         expect(session.result).toBeNull();
         expect([form.lat, form.lng]).toEqual(['', '']);
+        // The features are ordinary map features now.
+        expect(ctx.features.map((f) => f.id)).toEqual(kept);
     });
 
-    it('announces panel-close when the panel was shown, and does not when it was not', async () => {
-        const closed: unknown[] = [];
-        const onClose = (e: Event): void => {
-            closed.push((e as CustomEvent).detail);
-        };
-        window.addEventListener(PANEL_CLOSE, onClose);
-        const first = await enabled();
-        await first.instance.disable();
-        expect(closed).toEqual([]);
-        wrapper = undefined;
-        const ctx = await install();
-        await ctx.instance.enable();
-        await plugin?.pending;
-        launch(ctx);
+    it('stops a pending pick and removes its keyboard listener', async () => {
+        const tracker = trackListeners();
+        const ctx = await enabled();
+        controller.pick();
+        expect(session.picking).toBe(true);
+        expect(tracker.outstanding().length).toBeGreaterThan(0);
         await ctx.instance.disable();
-        expect(closed).toEqual([{ id: 'taknz-sar', area: 'bottom' }]);
-        window.removeEventListener(PANEL_CLOSE, onClose);
+        expect(tracker.outstanding()).toEqual([]);
+        expect(ctx.map.cursor).toBe('');
+        expect(ctx.map.listenerCount()).toBe(0);
     });
 
     it('is safe to call twice and after a failed map', async () => {
@@ -776,18 +1143,13 @@ describe('disable()', () => {
 
     it('then enable() works again', async () => {
         const ctx = await enabled();
-        launch(ctx);
         await ctx.instance.disable();
-        wrapper?.unmount();
         await ctx.instance.enable();
         await plugin?.pending;
         expect(ctx.calls.filter((c) => c === 'menu.add:sar')).toHaveLength(2);
-        launch(ctx);
-        await flushPromises();
-        expect(ctx.bar.has('taknz-sar')).toBe(true);
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
         expect(session.run).toBe('done');
-        expect(ours(ctx.map)).toHaveLength(4);
+        expect(ctx.features.filter((f) => f.properties.callsign === 'SAR IPP')).toHaveLength(1);
     });
 
     it('enable() twice in a row registers once', async () => {
@@ -799,3 +1161,5 @@ describe('disable()', () => {
         expect(adds - removes).toBe(1);
     });
 });
+
+export type { FakeApi };

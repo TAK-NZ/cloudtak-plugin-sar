@@ -1,8 +1,6 @@
-import {
-    ID_PREFIX, LAYER_FILL, LAYER_IPP, LAYER_LABEL, LAYER_OUTLINE, SOURCE_CONTOURS, SOURCE_IPP, SOURCE_LABELS,
-} from './constants.ts';
-import { contourFeatures, ippPoint, labelPoints } from './result.ts';
-import type { Bbox, TravelTimeResult } from './types.ts';
+import { ID_PREFIX, LAYER_IPP, SOURCE_IPP } from './constants.ts';
+import { ippPoint } from './result.ts';
+import type { Bbox } from './types.ts';
 
 export interface StyleLayerLike {
     id: string;
@@ -22,8 +20,6 @@ export interface GeoJsonData {
 export interface GeoJsonSourceSpec {
     type: 'geojson';
     data: GeoJsonData;
-    /** Shown in the map's attribution control while the source is drawn. HTML, so the text is escaped. */
-    attribution?: string;
 }
 
 export interface LayerSpec {
@@ -39,7 +35,7 @@ export interface FitOptions {
     duration: number;
 }
 
-/** The subset of the MapLibre map the layers write to. */
+/** The subset of the MapLibre map the preview writes to. */
 export interface MapLike {
     getStyle(): StyleLike | undefined;
     getLayer(id: string): unknown;
@@ -50,76 +46,25 @@ export interface MapLike {
     removeSource(id: string): unknown;
     moveLayer(id: string, beforeId?: string): unknown;
     fitBounds(bounds: [[number, number], [number, number]], options: FitOptions): unknown;
+    getContainer?(): Element;
     on(type: string, listener: () => void): unknown;
     off(type: string, listener: () => void): unknown;
 }
 
-const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-
-/**
- * The engine's attribution lines as one string for the map's attribution control, which renders
- * HTML: every character that could start markup is escaped. Empty when there are no lines.
- */
-export function attributionText(result: TravelTimeResult): string {
-    return result.attribution.map((line) => line.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c])).join(' | ');
-}
-
 /** Minimum time between two checks on `idle`. */
 export const IDLE_THROTTLE_MS = 500;
-/** Space around the fitted bounds. The bottom is larger because the panel covers the lower part of the map. */
-export const FIT_PADDING = { top: 40, right: 40, bottom: 320, left: 40 };
+/** Space around the fitted bounds, in px. The host's side offset is added on the right. */
+export const FIT_PADDING = 40;
 
 const ours = (id: string): boolean => id.startsWith(ID_PREFIX);
 
 /**
  * First layer of the Map Features (CoT) overlay, or the first symbol layer.
- * The contours go directly below it so markers stay on top. undefined = top of the stack.
+ * The preview goes directly below it so markers stay on top. undefined = top of the stack.
  */
 export function markerAnchor(style: StyleLike): string | undefined {
     return style.layers.find((l) => !ours(l.id) && l.source === '-1')?.id
         ?? style.layers.find((l) => !ours(l.id) && l.type === 'symbol')?.id;
-}
-
-
-/** Bottom to top. */
-const LAYER_ORDER = [LAYER_FILL, LAYER_OUTLINE, LAYER_LABEL, LAYER_IPP];
-
-function layerSpecs(): LayerSpec[] {
-    return [
-        {
-            id: LAYER_FILL,
-            type: 'fill',
-            source: SOURCE_CONTOURS,
-            // A higher sort key draws later (on top), so the longest band, which has the lowest key, is underneath.
-            layout: { 'fill-sort-key': ['-', 0, ['get', 'hours']] },
-            paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.18 },
-        },
-        {
-            id: LAYER_OUTLINE,
-            type: 'line',
-            source: SOURCE_CONTOURS,
-            layout: { 'line-join': 'round' },
-            paint: { 'line-color': ['get', 'color'], 'line-width': 2.5 },
-        },
-        {
-            id: LAYER_LABEL,
-            type: 'symbol',
-            source: SOURCE_LABELS,
-            layout: {
-                'text-field': ['get', 'text'],
-                'text-font': ['Open Sans Bold'],
-                'text-size': 14,
-                'text-allow-overlap': true,
-            },
-            paint: { 'text-color': '#111111', 'text-halo-color': '#ffffff', 'text-halo-width': 2 },
-        },
-        {
-            id: LAYER_IPP,
-            type: 'circle',
-            source: SOURCE_IPP,
-            paint: { 'circle-radius': 7, 'circle-color': '#ffffff', 'circle-stroke-color': '#111111', 'circle-stroke-width': 3 },
-        },
-    ];
 }
 
 const reducedMotion = (): boolean => {
@@ -130,20 +75,29 @@ const reducedMotion = (): boolean => {
     }
 };
 
+/** The width in px that the host's side pane covers on the right of the map; 0 when unknown. */
+function sideOffset(map: MapLike): number {
+    try {
+        const el = map.getContainer?.();
+        if (!el || typeof getComputedStyle !== 'function') return 0;
+        const n = Number.parseFloat(getComputedStyle(el).getPropertyValue('--map-side-offset'));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch {
+        return 0;
+    }
+}
+
 /**
- * The contours of one result and the start point, as MapLibre sources and layers.
+ * The start point preview: a dot shown while the start point is valid and no result exists yet.
+ * The results themselves are CloudTAK features, not layers of this class.
  * Everything is owned by this class: `clear()` and `dispose()` leave no layer, source or listener.
- * Map listeners (`style.load`, throttled `idle`) exist only while something is shown.
+ * Map listeners (`style.load`, throttled `idle`) exist only while the dot is shown.
  */
 export class SarLayers {
-    private result: TravelTimeResult | null = null;
-    private attributionUsed = '';
     private ipp: [number, number] | null = null;
     private listening = false;
     private disposed = false;
     private lastIdle = Number.NEGATIVE_INFINITY;
-    /** Padding used by fitBounds; the host may change it. */
-    fitPadding = { ...FIT_PADDING };
 
     constructor(private readonly map: MapLike) {}
 
@@ -158,21 +112,6 @@ export class SarLayers {
         this.ensure();
     };
 
-    /** Draw a result and fit the map to its bounds. */
-    show(result: TravelTimeResult): void {
-        if (this.disposed) return;
-        this.result = result;
-        // A source keeps the attribution it was created with: re-create it when the text changes.
-        if (attributionText(result) !== this.attributionUsed) {
-            this.removeLayerAndSource([LAYER_FILL, LAYER_OUTLINE], SOURCE_CONTOURS);
-        }
-        this.attach();
-        this.ensure();
-        this.setData(SOURCE_CONTOURS, { type: 'FeatureCollection', features: contourFeatures(result) });
-        this.setData(SOURCE_LABELS, { type: 'FeatureCollection', features: labelPoints(result) });
-        if (result.bbox) this.fit(result.bbox);
-    }
-
     /** Show or hide the start point. */
     setIpp(lngLat: [number, number] | null): void {
         if (this.disposed) return;
@@ -180,18 +119,27 @@ export class SarLayers {
         if (lngLat) {
             this.attach();
             this.ensure();
-            this.setData(SOURCE_IPP, { type: 'FeatureCollection', features: [ippPoint(lngLat[0], lngLat[1])] });
+            this.setData({ type: 'FeatureCollection', features: [ippPoint(lngLat[0], lngLat[1])] });
         } else {
-            this.removeIpp();
-            this.detachIfIdle();
+            this.remove();
+            this.detach();
         }
+    }
+
+    /** Fit the map to the bounds, leaving room for the host's side pane. */
+    fit(b: Bbox): void {
+        if (this.disposed) return;
+        const pad = FIT_PADDING;
+        this.map.fitBounds([[b.west, b.south], [b.east, b.north]], {
+            padding: { top: pad, right: pad + sideOffset(this.map), bottom: pad, left: pad },
+            duration: reducedMotion() ? 0 : 500,
+        });
     }
 
     /** Remove everything this class drew, and its listeners. */
     clear(): void {
-        this.result = null;
         this.ipp = null;
-        this.removeAll();
+        this.remove();
         this.detach();
     }
 
@@ -201,26 +149,29 @@ export class SarLayers {
     }
 
     /**
-     * Add what is missing (after a style reload, or when something removed it) and keep the
-     * layers below the marker layers. Cheap when nothing has changed.
+     * Add what is missing (after a style reload, or when something removed it) and keep the dot
+     * below the marker layers. Cheap when nothing has changed.
      */
     ensure(): void {
-        if (this.disposed || (!this.result && !this.ipp)) return;
+        if (this.disposed || !this.ipp) return;
         const style = this.map.getStyle();
         if (!style) return;
         const anchor = markerAnchor(style);
-        if (this.result) {
-            this.ensureSource(SOURCE_CONTOURS, { type: 'FeatureCollection', features: contourFeatures(this.result) }, attributionText(this.result));
-            this.ensureSource(SOURCE_LABELS, { type: 'FeatureCollection', features: labelPoints(this.result) });
-            for (const spec of layerSpecs()) {
-                if (spec.id !== LAYER_IPP) this.ensureLayer(spec, anchor);
-            }
+        if (!this.map.getSource(SOURCE_IPP)) {
+            this.map.addSource(SOURCE_IPP, { type: 'geojson', data: { type: 'FeatureCollection', features: [ippPoint(this.ipp[0], this.ipp[1])] } });
         }
-        if (this.ipp) {
-            this.ensureSource(SOURCE_IPP, { type: 'FeatureCollection', features: [ippPoint(this.ipp[0], this.ipp[1])] });
-            this.ensureLayer(layerSpecs().find((l) => l.id === LAYER_IPP) as LayerSpec, anchor);
+        if (!this.map.getLayer(LAYER_IPP)) {
+            this.map.addLayer({
+                id: LAYER_IPP,
+                type: 'circle',
+                source: SOURCE_IPP,
+                paint: { 'circle-radius': 7, 'circle-color': '#ffffff', 'circle-stroke-color': '#111111', 'circle-stroke-width': 3 },
+            }, anchor);
+        } else if (anchor !== undefined) {
+            const ids = style.layers.map((l) => l.id);
+            const at = ids.indexOf(anchor);
+            if (at >= 0 && ids.indexOf(LAYER_IPP) > at) this.map.moveLayer(LAYER_IPP, anchor);
         }
-        this.keepBelow(anchor);
     }
 
     /** Ids of our layers in the style, bottom to top. For tests. */
@@ -233,63 +184,14 @@ export class SarLayers {
         return this.listening;
     }
 
-    private ensureSource(id: string, data: GeoJsonData, attribution = ''): void {
-        if (this.map.getSource(id)) return;
-        this.map.addSource(id, attribution ? { type: 'geojson', data, attribution } : { type: 'geojson', data });
-        if (id === SOURCE_CONTOURS) this.attributionUsed = attribution;
-    }
-
-    private ensureLayer(spec: LayerSpec, anchor: string | undefined): void {
-        if (!this.map.getLayer(spec.id)) this.map.addLayer(spec, this.beforeFor(spec.id, anchor));
-    }
-
-    /** The next layer of ours above `id` that exists, else the anchor, so the order stays fill, outline, label, start point. */
-    private beforeFor(id: string, anchor: string | undefined): string | undefined {
-        for (const above of LAYER_ORDER.slice(LAYER_ORDER.indexOf(id) + 1)) {
-            if (this.map.getLayer(above)) return above;
-        }
-        return anchor;
-    }
-
-    /** Move our layers below the anchor when a marker layer was added under them. */
-    private keepBelow(anchor: string | undefined): void {
-        if (anchor === undefined) return;
-        const ids = (this.map.getStyle()?.layers ?? []).map((l) => l.id);
-        const at = ids.indexOf(anchor);
-        if (at < 0) return;
-        for (const id of LAYER_ORDER) {
-            const i = ids.indexOf(id);
-            if (i > at) this.map.moveLayer(id, anchor);
-        }
-    }
-
-    private setData(id: string, data: GeoJsonData): void {
-        const source = this.map.getSource(id) as { setData?: (d: GeoJsonData) => void } | undefined;
+    private setData(data: GeoJsonData): void {
+        const source = this.map.getSource(SOURCE_IPP) as { setData?: (d: GeoJsonData) => void } | undefined;
         source?.setData?.(data);
     }
 
-    private fit(b: Bbox): void {
-        this.map.fitBounds([[b.west, b.south], [b.east, b.north]], {
-            padding: { ...this.fitPadding },
-            duration: reducedMotion() ? 0 : 500,
-        });
-    }
-
-    private removeLayerAndSource(layers: string[], source: string): void {
-        for (const id of layers) {
-            if (this.map.getLayer(id)) this.map.removeLayer(id);
-        }
-        if (this.map.getSource(source)) this.map.removeSource(source);
-    }
-
-    private removeIpp(): void {
-        this.removeLayerAndSource([LAYER_IPP], SOURCE_IPP);
-    }
-
-    private removeAll(): void {
-        this.removeLayerAndSource([LAYER_FILL, LAYER_OUTLINE], SOURCE_CONTOURS);
-        this.removeLayerAndSource([LAYER_LABEL], SOURCE_LABELS);
-        this.removeIpp();
+    private remove(): void {
+        if (this.map.getLayer(LAYER_IPP)) this.map.removeLayer(LAYER_IPP);
+        if (this.map.getSource(SOURCE_IPP)) this.map.removeSource(SOURCE_IPP);
     }
 
     private attach(): void {
@@ -304,9 +206,5 @@ export class SarLayers {
         this.listening = false;
         this.map.off('style.load', this.onStyleLoad);
         this.map.off('idle', this.onIdle);
-    }
-
-    private detachIfIdle(): void {
-        if (!this.result && !this.ipp) this.detach();
     }
 }

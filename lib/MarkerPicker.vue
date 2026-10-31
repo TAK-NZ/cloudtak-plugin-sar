@@ -5,19 +5,15 @@
         class='border rounded p-2'
         data-test='marker-picker'
     >
-        <label
-            class='form-label mb-1'
-            for='sar-marker-filter'
-        >Filter markers by name</label>
-        <input
+        <FieldInput
             id='sar-marker-filter'
             v-model='filter'
+            class='mb-2'
+            label='Filter markers by name'
             type='search'
-            autocomplete='off'
-            class='form-control mb-2'
-            style='font-size: 16px; min-height: 44px; min-width: 0;'
+            inputmode='search'
             data-test='marker-filter'
-        >
+        />
         <p
             v-if='session.markersLoading'
             class='mb-0'
@@ -51,7 +47,7 @@
             >
                 <button
                     type='button'
-                    class='btn btn-outline-secondary w-100 text-start mb-1'
+                    class='btn btn-outline-primary w-100 text-start mb-1'
                     style='min-height: 44px;'
                     data-test='marker'
                     @click='chooseMarker(marker)'
@@ -70,6 +66,7 @@
 </template>
 <script setup lang='ts'>
 import { computed, ref } from 'vue';
+import FieldInput from './FieldInput.vue';
 import { chooseMarker, session } from './state.ts';
 
 const LIMIT = 100;

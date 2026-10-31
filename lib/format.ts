@@ -24,3 +24,17 @@ export function formatBuilt(builtAt: string | null | undefined): string | null {
 export function formatKm(km: number): string {
     return String(km);
 }
+
+/** An ISO time as `2026-03-01 12:00 UTC`; the text itself when it cannot be read. */
+export function formatUtc(iso: string): string {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return iso;
+    return `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/** An ISO time as `20260301-1200Z` for file names; `unknown-time` when it cannot be read. */
+export function formatStamp(iso: string): string {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return 'unknown-time';
+    return `${new Date(t).toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}Z`;
+}

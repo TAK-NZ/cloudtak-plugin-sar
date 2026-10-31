@@ -12,9 +12,23 @@ export interface TravelTimeBody {
     radius_km?: number;
 }
 
+/** The body the relay accepts for a TARR run. Empty ecoregion and terrain are left out. */
+export interface TarrBody {
+    ipp: { lat: number; lng: number };
+    profile: string;
+    ecoregion?: string;
+    terrain?: string;
+}
+
+export type Mode = 'travel-time' | 'tarr';
+
+export type CalcRequest = { mode: 'travel-time'; body: TravelTimeBody } | { mode: 'tarr'; body: TarrBody };
+
 export interface RelayStatus {
     apiVersion: number;
     enabled: boolean;
+    /** The modes the relay can route. Absent on a relay that predates TARR: travel time only. */
+    modes?: string[];
 }
 
 export interface ResultWarning {
@@ -32,9 +46,11 @@ export interface Bbox {
 
 export type Position = [number, number];
 
+export type PolygonGeometry = { type: 'Polygon'; coordinates: Position[][] } | { type: 'MultiPolygon'; coordinates: Position[][][] };
+
 export interface ContourFeature {
     type: 'Feature';
-    geometry: { type: 'Polygon'; coordinates: Position[][] } | { type: 'MultiPolygon'; coordinates: Position[][][] };
+    geometry: PolygonGeometry;
     properties: {
         hours: number;
         color: string;
@@ -43,9 +59,8 @@ export interface ContourFeature {
     };
 }
 
-export interface TravelTimeResult {
-    contours: ContourFeature[];
-    parameters: { speed_kmh: number | null; radius_km: number | null; intervals_hours: number[] };
+/** What both modes share. */
+export interface ResultBase {
     bbox: Bbox | null;
     warnings: ResultWarning[];
     /** ISO date-time of the roads and trails data, or null when unknown. */
@@ -53,6 +68,74 @@ export interface TravelTimeResult {
     attribution: string[];
     disclaimer: string;
     timingSeconds: number | null;
+}
+
+export interface TravelTimeResult extends ResultBase {
+    mode: 'travel-time';
+    contours: ContourFeature[];
+    parameters: { speed_kmh: number | null; radius_km: number | null; intervals_hours: number[] };
+}
+
+/** Distances or multipliers for the 25%, 50% and 75% rings. */
+export interface Triple {
+    p25: number;
+    p50: number;
+    p75: number;
+}
+
+export interface RingFeature {
+    kind: 'terrain' | 'plain';
+    percent: 25 | 50 | 75;
+    label: string;
+    color: string;
+    koesterKm: number | null;
+    distanceKm: number | null;
+    thresholdM?: number;
+    multiplier?: number;
+    geometry: PolygonGeometry;
+}
+
+export interface TarrCalibration {
+    region: string;
+    note: string;
+    source: string;
+    profileSpecific: boolean | null;
+    multiplier: Triple | null;
+}
+
+export interface TarrResult extends ResultBase {
+    mode: 'tarr';
+    rings: RingFeature[];
+    parameters: {
+        profile: string;
+        ecoregion: string | null;
+        terrain: string | null;
+        koesterKm: Triple | null;
+        calibratedKm: Triple | null;
+        radiusKm: number | null;
+    };
+    calibration: TarrCalibration | null;
+}
+
+export type AnalysisResult = TravelTimeResult | TarrResult;
+
+/** What was asked for, kept next to the result for the feature remarks and the exports. */
+export interface RunMeta {
+    mode: Mode;
+    /** ISO date-time of the run. */
+    ranAt: string;
+    ipp: { lat: number; lng: number };
+    speedKmh?: number;
+    bandsHours?: number[];
+    profile?: string;
+    ecoregion?: string;
+    terrain?: string;
+}
+
+/** A Data Sync the user can file features in. */
+export interface MissionChoice {
+    guid: string;
+    name: string;
 }
 
 /**
@@ -91,4 +174,4 @@ export interface CalcError {
     suggestions?: Suggestions;
 }
 
-export type CalcOutcome = { ok: true; result: TravelTimeResult } | { ok: false; error: CalcError };
+export type CalcOutcome = { ok: true; result: AnalysisResult } | { ok: false; error: CalcError };

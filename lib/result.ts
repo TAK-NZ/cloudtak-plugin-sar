@@ -1,6 +1,8 @@
-import { FALLBACK_COLOR } from './constants.ts';
-import { formatHours } from './format.ts';
-import type { Bbox, ContourFeature, Position, ResultWarning, TravelTimeResult } from './types.ts';
+import { BAND_COLORS, FALLBACK_COLOR } from './constants.ts';
+import type {
+    AnalysisResult, Bbox, ContourFeature, PolygonGeometry, Position, ResultBase, ResultWarning, RingFeature, TarrCalibration, TarrResult,
+    TravelTimeResult, Triple,
+} from './types.ts';
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -13,23 +15,38 @@ function isPosition(v: unknown): v is Position {
 const isRing = (v: unknown): boolean => Array.isArray(v) && v.length >= 4 && v.every(isPosition);
 const isPolygon = (v: unknown): boolean => Array.isArray(v) && v.length >= 1 && v.every(isRing);
 
-function parseFeature(raw: unknown): ContourFeature | null {
-    if (!isObject(raw) || raw.type !== 'Feature' || !isObject(raw.geometry) || !isObject(raw.properties)) return null;
-    const g = raw.geometry;
+function parseGeometry(g: unknown): PolygonGeometry | null {
+    if (!isObject(g)) return null;
     if (g.type === 'Polygon' ? !isPolygon(g.coordinates) : g.type !== 'MultiPolygon' || !Array.isArray(g.coordinates) || !g.coordinates.every(isPolygon)) return null;
+    return g as unknown as PolygonGeometry;
+}
+
+function parseFeature(raw: unknown): ContourFeature | null {
+    if (!isObject(raw) || raw.type !== 'Feature' || !isObject(raw.properties)) return null;
+    const geometry = parseGeometry(raw.geometry);
+    if (!geometry) return null;
     const p = raw.properties;
     if (!isNum(p.hours) || p.hours <= 0) return null;
     const properties: ContourFeature['properties'] = {
         hours: p.hours,
-        color: typeof p.color === 'string' && HEX.test(p.color) ? p.color : FALLBACK_COLOR,
+        // The engine's colour is not used: see BAND_COLORS. applyBandColors sets the real one.
+        color: FALLBACK_COLOR,
     };
     if (isNum(p.label_lat) && isNum(p.label_lng)) {
         properties.label_lat = p.label_lat;
         properties.label_lng = p.label_lng;
     }
-    return { type: 'Feature', geometry: g as unknown as ContourFeature['geometry'], properties };
+    return { type: 'Feature', geometry, properties };
 }
 
+/** Colour the bands by rank, smallest first, so the inner band is always the first colour of BAND_COLORS. */
+function applyBandColors(contours: ContourFeature[]): ContourFeature[] {
+    const ranked = [...contours].sort((a, b) => a.properties.hours - b.properties.hours);
+    ranked.forEach((contour, i) => {
+        contour.properties.color = BAND_COLORS[i % BAND_COLORS.length];
+    });
+    return contours;
+}
 function parseBbox(raw: unknown): Bbox | null {
     if (!isObject(raw) || !isNum(raw.west) || !isNum(raw.south) || !isNum(raw.east) || !isNum(raw.north)) return null;
     if (raw.west >= raw.east || raw.south >= raw.north) return null;
@@ -50,74 +67,120 @@ function parseWarnings(raw: unknown): ResultWarning[] {
     return out;
 }
 
-/**
- * Validate the 200 body of the relay. Returns null when it is not a travel-time result.
- * Optional parts are tolerated: a bad or missing one is dropped, a bad contour is skipped.
- * Engine strings are kept as received; they must only be rendered as text.
- */
-export function parseResult(raw: unknown): TravelTimeResult | null {
-    if (!isObject(raw) || raw.status !== 'ok' || raw.mode !== 'travel-time') return null;
-    const c = raw.contours;
-    if (!isObject(c) || c.type !== 'FeatureCollection' || !Array.isArray(c.features)) return null;
-    const contours = c.features.map(parseFeature).filter((f): f is ContourFeature => f !== null);
-    const params = isObject(raw.parameters) ? raw.parameters : {};
+function parseRing(raw: unknown): RingFeature | null {
+    if (!isObject(raw) || raw.type !== 'Feature' || !isObject(raw.properties)) return null;
+    const geometry = parseGeometry(raw.geometry);
+    const p = raw.properties;
+    if (!geometry || (p.kind !== 'terrain' && p.kind !== 'plain')) return null;
+    if (p.percent !== 25 && p.percent !== 50 && p.percent !== 75) return null;
+    if (typeof p.label !== 'string' || p.label === '') return null;
+    const ring: RingFeature = {
+        kind: p.kind,
+        percent: p.percent,
+        label: p.label,
+        color: typeof p.color === 'string' && HEX.test(p.color) ? p.color : FALLBACK_COLOR,
+        koesterKm: isNum(p.koester_km) ? p.koester_km : null,
+        distanceKm: isNum(p.distance_km) ? p.distance_km : null,
+        geometry,
+    };
+    if (isNum(p.threshold_m)) ring.thresholdM = p.threshold_m;
+    if (isNum(p.multiplier)) ring.multiplier = p.multiplier;
+    return ring;
+}
+
+function parseTriple(raw: unknown): Triple | null {
+    if (!isObject(raw) || !isNum(raw.p25) || !isNum(raw.p50) || !isNum(raw.p75)) return null;
+    return { p25: raw.p25, p50: raw.p50, p75: raw.p75 };
+}
+
+function parseCalibration(raw: unknown): TarrCalibration | null {
+    if (!isObject(raw)) return null;
+    return {
+        region: typeof raw.region === 'string' ? raw.region : '',
+        note: typeof raw.note === 'string' ? raw.note : '',
+        source: typeof raw.source === 'string' ? raw.source : '',
+        profileSpecific: typeof raw.profile_specific === 'boolean' ? raw.profile_specific : null,
+        multiplier: parseTriple(raw.multiplier),
+    };
+}
+
+function parseBase(raw: Record<string, unknown>): ResultBase {
     const data = isObject(raw.data) ? raw.data : {};
     const timings = isObject(raw.timings_s) ? raw.timings_s : {};
-    const total = isNum(timings.total) ? timings.total : null;
     return {
-        contours,
-        parameters: {
-            speed_kmh: isNum(params.speed_kmh) ? params.speed_kmh : null,
-            radius_km: isNum(params.radius_km) ? params.radius_km : null,
-            intervals_hours: Array.isArray(params.intervals_hours) ? params.intervals_hours.filter(isNum) : [],
-        },
         bbox: parseBbox(raw.bbox),
         warnings: parseWarnings(raw.warnings),
         osmBuiltAt: typeof data.osm_built_at === 'string' ? data.osm_built_at : null,
         attribution: Array.isArray(raw.attribution) ? raw.attribution.filter((a): a is string => typeof a === 'string' && a !== '') : [],
         disclaimer: typeof raw.disclaimer === 'string' ? raw.disclaimer : '',
-        timingSeconds: total,
+        timingSeconds: isNum(timings.total) ? timings.total : null,
     };
 }
 
-export interface MapFeature {
-    type: 'Feature';
-    geometry: ContourFeature['geometry'];
-    properties: { hours: number; color: string; text: string };
+function features(raw: unknown): unknown[] | null {
+    if (!isObject(raw) || raw.type !== 'FeatureCollection' || !Array.isArray(raw.features)) return null;
+    return raw.features;
 }
 
 /**
- * Contours for the map, largest band first so smaller bands draw on top. The on-map text
- * is built here from `hours` (the engine's own `label` is not used).
+ * Validate the 200 body of the relay. Returns null when it is not a result of the expected
+ * mode (`travel-time` unless `expected` says otherwise). Optional parts are tolerated: a bad
+ * or missing one is dropped, a bad contour or ring is skipped.
+ * Engine strings are kept as received; they must only be rendered as text.
  */
-export function contourFeatures(result: TravelTimeResult): MapFeature[] {
-    return [...result.contours]
-        .sort((a, b) => b.properties.hours - a.properties.hours)
-        .map((f) => ({
-            type: 'Feature' as const,
-            geometry: f.geometry,
-            properties: { hours: f.properties.hours, color: f.properties.color, text: formatHours(f.properties.hours) },
-        }));
-}
-
-export interface LabelPoint {
-    type: 'Feature';
-    geometry: { type: 'Point'; coordinates: Position };
-    properties: { hours: number; color: string; text: string };
-}
-
-/** One point per contour that has a label position, largest band first. */
-export function labelPoints(result: TravelTimeResult): LabelPoint[] {
-    return [...result.contours]
-        .filter((f) => f.properties.label_lat !== undefined && f.properties.label_lng !== undefined)
-        .sort((a, b) => b.properties.hours - a.properties.hours)
-        .map((f) => ({
-            type: 'Feature' as const,
-            geometry: { type: 'Point' as const, coordinates: [f.properties.label_lng as number, f.properties.label_lat as number] as Position },
-            properties: { hours: f.properties.hours, color: f.properties.color, text: formatHours(f.properties.hours) },
-        }));
+export function parseResult(raw: unknown, expected: 'travel-time' | 'tarr' = 'travel-time'): AnalysisResult | null {
+    if (!isObject(raw) || raw.status !== 'ok' || raw.mode !== expected) return null;
+    const list = features(raw.contours);
+    if (!list) return null;
+    const base = parseBase(raw);
+    const params = isObject(raw.parameters) ? raw.parameters : {};
+    if (expected === 'tarr') {
+        const result: TarrResult = {
+            mode: 'tarr',
+            ...base,
+            rings: list.map(parseRing).filter((f): f is RingFeature => f !== null),
+            parameters: {
+                profile: typeof params.profile === 'string' ? params.profile : '',
+                ecoregion: typeof params.ecoregion === 'string' ? params.ecoregion : null,
+                terrain: typeof params.terrain === 'string' ? params.terrain : null,
+                koesterKm: parseTriple(params.koester_km),
+                calibratedKm: parseTriple(params.calibrated_km),
+                radiusKm: isNum(params.radius_km) ? params.radius_km : null,
+            },
+            calibration: parseCalibration(raw.calibration),
+        };
+        return result;
+    }
+    const result: TravelTimeResult = {
+        mode: 'travel-time',
+        ...base,
+        contours: applyBandColors(list.map(parseFeature).filter((f): f is ContourFeature => f !== null)),
+        parameters: {
+            speed_kmh: isNum(params.speed_kmh) ? params.speed_kmh : null,
+            radius_km: isNum(params.radius_km) ? params.radius_km : null,
+            intervals_hours: Array.isArray(params.intervals_hours) ? params.intervals_hours.filter(isNum) : [],
+        },
+    };
+    return result;
 }
 
 export function ippPoint(lng: number, lat: number): { type: 'Feature'; geometry: { type: 'Point'; coordinates: Position }; properties: Record<string, never> } {
     return { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: {} };
+}
+
+/**
+ * A TARR result without the plain circles. A plain circle whose percentage then has no ring at all
+ * (the terrain ring was missing) is announced with a note, so the gap is not silent.
+ */
+export function withoutPlainCircles(result: TarrResult): TarrResult {
+    const kept = result.rings.filter((ring) => ring.kind === 'terrain');
+    if (kept.length === result.rings.length) return result;
+    const shown = new Set(kept.map((ring) => ring.percent));
+    const gaps = [...new Set(result.rings.filter((ring) => ring.kind === 'plain' && !shown.has(ring.percent)).map((ring) => ring.percent))].sort((a, b) => a - b);
+    const notes: ResultWarning[] = gaps.map((percent) => ({
+        severity: 'info',
+        source: 'plugin',
+        message: `No terrain ring for ${percent}%. Its plain circle is hidden because plain circles are switched off.`,
+    }));
+    return { ...result, rings: kept, warnings: [...result.warnings, ...notes] };
 }

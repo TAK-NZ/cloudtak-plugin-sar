@@ -1,11 +1,11 @@
 /*
  * Menu icon with a state dot.
  *
- * Wraps the Tabler radar icon and adds an 8 px dot while the travel-time panel is minimized for another
- * plugin's panel. The host copies a menu item's fields when it is added, so the item cannot change later.
- * A render function that reads a reactive flag does update.
+ * Wraps the Tabler radar icon and adds an 8 px dot while a calculation is running, so the state is visible
+ * when the pane is closed. The host copies a menu item's fields when it is added, so the item cannot change
+ * later. A render function that reads a reactive flag does update.
  *
- * The dot is never the only signal: the wrapper gets a title, and the text "Controls hidden. " is added in
+ * The dot is never the only signal: the wrapper gets a title, and the text "Calculation running. " is added in
  * front of the label for screen readers (the icon comes before the label in the menu item).
  * The same approach as the Rubber Sheet plugin's menu icon.
  */
@@ -72,14 +72,14 @@ export const MenuIcon = defineComponent({
     setup(props) {
         ensureStyle();
         return () => {
-            const hidden = session.minimized;
+            const hidden = session.run === 'running';
             return h('span', {
                 class: 'taknz-sar-menu-icon',
-                title: hidden ? 'Travel time, controls hidden' : undefined,
+                title: hidden ? 'SAR planning, calculation running' : undefined,
             }, [
                 h(IconRadar2, { size: props.size, color: props.color, stroke: props.stroke === undefined ? undefined : String(props.stroke) }),
                 hidden ? h('span', { class: 'taknz-sar-menu-icon__dot', 'aria-hidden': 'true' }) : null,
-                hidden ? h('span', { class: 'taknz-sar-menu-icon__text' }, 'Controls hidden. ') : null,
+                hidden ? h('span', { class: 'taknz-sar-menu-icon__text' }, 'Calculation running. ') : null,
             ]);
         };
     },

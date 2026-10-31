@@ -147,6 +147,11 @@ export class FakeMap implements MapLike {
     getCanvas(): { style: { cursor: string } } {
         return { style: this };
     }
+    /** `getContainer()` returns this element, so a test can set CSS variables on it. */
+    container = document.createElement('div');
+    getContainer(): HTMLElement {
+        return this.container;
+    }
 
     /** What a style reload does to layers added with addLayer: everything not in `keep` goes. */
     reloadStyle(prefix: string): void {

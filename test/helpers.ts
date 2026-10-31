@@ -44,25 +44,39 @@ export interface FakeFeature {
     path: string;
     properties: Record<string, unknown>;
     geometry: { type: string; coordinates: unknown };
+    origin?: { mode: string; mode_id: string };
 }
 
 export interface FakeApi {
     api: PluginAPI;
-    /** Every menu / route / bottom-bar / router call as a string, in order. */
+    /** Every menu / route / router / feature call as a string, in order. */
     calls: string[];
-    menuItems: { key: string; label?: string; tooltip?: string; route?: string }[];
+    menuItems: { key: string; label?: string; tooltip?: string; route?: string; description?: string }[];
     routes: { name?: unknown; component?: unknown }[];
-    /** The bottom bar items now registered. */
-    bar: Set<string>;
+    /** The features on the "map": the ones passed in, then every add and remove. */
     features: FakeFeature[];
+    /** Features filed in a Data Sync, by mission guid. */
+    missionFeatures: Map<string, FakeFeature[]>;
+    /** Every call of feature.add, with its options. */
+    adds: { features: FakeFeature[]; mission?: string }[];
+    removes: string[][];
+    pushes: unknown[];
+    /** Make the next feature.add reject once. */
+    failNextAdd(error?: Error): void;
+    failAddFor(mission: string, error?: Error): void;
 }
 
-/** Records every menu / route / bottom-bar / router call. */
+/** Records every menu / route / router / feature call. The feature store behaves like the host's: add stores, remove deletes, list filters. */
 export function makeFakeApi(map: EventedFakeMap | Error = new EventedFakeMap(), features: FakeFeature[] = []): FakeApi {
     const calls: string[] = [];
     const menuItems: FakeApi['menuItems'] = [];
     const routes: FakeApi['routes'] = [];
-    const bar = new Set<string>();
+    const missionFeatures = new Map<string, FakeFeature[]>();
+    const adds: FakeApi['adds'] = [];
+    const removes: string[][] = [];
+    const pushes: unknown[] = [];
+    let failNext: Error | null = null;
+    const failFor = new Map<string, Error>();
     const api = {
         routes: {
             add: (route: FakeApi['routes'][number], parent?: string) => {
@@ -79,28 +93,70 @@ export function makeFakeApi(map: EventedFakeMap | Error = new EventedFakeMap(), 
                 calls.push(`menu.remove:${key}`);
             },
         },
-        bottomBar: {
-            add: (item: { key: string }) => {
-                bar.add(item.key);
-                calls.push(`bottomBar.add:${item.key}`);
-            },
-            remove: (key: string) => {
-                bar.delete(key);
-                calls.push(`bottomBar.remove:${key}`);
-            },
-        },
         router: {
             removeRoute: (name: string) => {
                 calls.push(`router.removeRoute:${name}`);
             },
+            push: async (to: unknown) => {
+                pushes.push(to);
+                calls.push(`router.push:${typeof to === 'string' ? to : JSON.stringify(to)}`);
+            },
         },
         feature: {
-            list: async (opts: { filter?: (f: FakeFeature) => boolean } = {}) => (opts.filter ? features.filter(opts.filter) : features),
+            list: async (opts: { filter?: (f: FakeFeature) => boolean } = {}) => (opts.filter ? features.filter(opts.filter) : [...features]),
+            add: async (list: FakeFeature[], opts: { mission?: string } = {}) => {
+                const copies = JSON.parse(JSON.stringify(list)) as FakeFeature[];
+                adds.push({ features: copies, mission: opts.mission });
+                calls.push(`feature.add:${copies.length}:${opts.mission ?? ''}`);
+                if (failNext) {
+                    const error = failNext;
+                    failNext = null;
+                    throw error;
+                }
+                const error = opts.mission ? failFor.get(opts.mission) : undefined;
+                if (error) throw error;
+                if (opts.mission) {
+                    missionFeatures.set(opts.mission, [...(missionFeatures.get(opts.mission) ?? []), ...copies]);
+                } else {
+                    features.push(...copies);
+                }
+            },
+            remove: async (ids: string[]) => {
+                removes.push([...ids]);
+                calls.push(`feature.remove:${ids.length}`);
+                for (const id of ids) {
+                    const at = features.findIndex((f) => f.id === id);
+                    if (at >= 0) features.splice(at, 1);
+                }
+            },
         },
         get map(): EventedFakeMap {
             if (map instanceof Error) throw map;
             return map;
         },
     };
-    return { api: api as unknown as PluginAPI, calls, menuItems, routes, bar, features };
+    return {
+        api: api as unknown as PluginAPI,
+        calls,
+        menuItems,
+        routes,
+        features,
+        missionFeatures,
+        adds,
+        removes,
+        pushes,
+        failNextAdd: (error = new Error('add failed')) => {
+            failNext = error;
+        },
+        failAddFor: (mission, error = new Error('not loaded')) => {
+            failFor.set(mission, error);
+        },
+    };
+}
+
+/** The radio input behind a pill of a TablerPillGroup, found by the text of its label. */
+export function pill(w: { findAll(selector: string): { text(): string; attributes(name: string): string | undefined }[]; get(selector: string): { element: Element; trigger(event: string): Promise<void> } }, text: string) {
+    const label = w.findAll('label.btn').find((l) => l.text() === text);
+    if (!label) throw new Error(`No pill "${text}"`);
+    return w.get(`#${label.attributes('for')}`);
 }

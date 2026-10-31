@@ -7,14 +7,18 @@ import type { VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import BandChips from '../lib/BandChips.vue';
 import MarkerPicker from '../lib/MarkerPicker.vue';
-import SarPanel from '../lib/SarPanel.vue';
+import SarPane from '../lib/SarPane.vue';
 import SarResult from '../lib/SarResult.vue';
-import { bindController, bindStorage, failRun, finishRun, form, resetAll, session, setStartPoint, startRun } from '../lib/state.ts';
+import { bindController, bindStorage, failRun, finishRun, form, resetAll, session, setStartPoint, startRun, ui } from '../lib/state.ts';
 import type { Controller } from '../lib/state.ts';
 import { parseResult } from '../lib/result.ts';
-import type { CalcError, TravelTimeResult } from '../lib/types.ts';
+import type { CalcError, RunMeta, TravelTimeResult } from '../lib/types.ts';
 import { feature, okBody } from './fixtures.ts';
 
+vi.mock('../lib/missions.ts', () => ({ listSubscribedMissions: vi.fn(async () => []) }));
+
+const meta: RunMeta = { mode: 'travel-time', ranAt: '2026-03-01T12:00:00Z', ipp: { lat: -40, lng: 172 }, speedKmh: 2.5, bandsHours: [1, 2, 4] };
+const finish = (r: TravelTimeResult): void => finishRun(r, meta, []);
 const libDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'lib');
 
 let wrapper: VueWrapper | undefined;
@@ -23,7 +27,7 @@ let spies: { [K in keyof Controller]: ReturnType<typeof vi.fn> };
 const result = (over: Record<string, unknown> = {}): TravelTimeResult => parseResult(okBody(over)) as TravelTimeResult;
 
 function mountPanel(): VueWrapper {
-    wrapper = mount(SarPanel, { attachTo: document.body });
+    wrapper = mount(SarPane, { attachTo: document.body });
     return wrapper;
 }
 
@@ -43,7 +47,10 @@ async function settle(): Promise<void> {
 beforeEach(() => {
     bindStorage(null);
     resetAll();
-    spies = { run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), close: vi.fn(), loadMarkers: vi.fn(async () => []) };
+    spies = {
+        run: vi.fn(), cancel: vi.fn(), clear: vi.fn(), pick: vi.fn(), loadMarkers: vi.fn(async () => []),
+        addToDataSync: vi.fn(async () => undefined), createPackage: vi.fn(async () => undefined), saveToFiles: vi.fn(async () => undefined), openFiles: vi.fn(),
+    };
     bindController(spies as unknown as Controller);
 });
 
@@ -55,21 +62,14 @@ afterEach(() => {
     document.body.innerHTML = '';
 });
 
-describe('SarPanel form', () => {
+describe('SarPane form', () => {
     it('shows the defaults: 2.5 km/h, bands 1, 2, 4 and 8 h, radius 10 km', () => {
         const w = mountPanel();
         expect((w.get('[data-test=speed]').element as HTMLInputElement).value).toBe('2.5');
         expect((w.get('[data-test=radius]').element as HTMLInputElement).value).toBe('10');
         expect(w.findAll('[data-test=band]').map((b) => b.text())).toEqual(['1 h', '2 h', '4 h', '8 h']);
         expect(w.text()).toContain('km/h');
-        expect(w.text()).toContain('In cities, large radii are slow.');
-    });
-
-    it('has a heading that receives focus when the panel opens', async () => {
-        const w = mountPanel();
-        await settle();
-        expect(document.activeElement).toBe(w.get('h2').element);
-        expect(w.get('h2').text()).toBe('Travel time');
+        expect(w.text()).toContain('Larger radii take longer.');
     });
 
     it('asks for the start point and keeps Run disabled until the form is valid', async () => {
@@ -120,7 +120,8 @@ describe('SarPanel form', () => {
         }
         for (const b of w.findAll('button')) {
             const style = b.attributes('style') ?? '';
-            expect(style, b.html()).toMatch(/(min-)?height: 44px/);
+            const height = Number(/(?:min-)?height: (\d+)px/.exec(style)?.[1]);
+            expect(height, b.html()).toBeGreaterThanOrEqual(44);
         }
     });
 
@@ -128,8 +129,6 @@ describe('SarPanel form', () => {
         const w = mountPanel();
         await w.get('[data-test=pick]').trigger('click');
         expect(spies.pick).toHaveBeenCalledTimes(1);
-        await w.get('[data-test=close]').trigger('click');
-        expect(spies.close).toHaveBeenCalledTimes(1);
         form.lat = '-40';
         await nextTick();
         await w.get('[data-test=clear]').trigger('click');
@@ -221,16 +220,16 @@ describe('running state', () => {
         startRun();
         session.elapsed = 7;
         await nextTick();
-        expect(w.get('[data-test=elapsed]').text()).toBe('Working... 7 s');
+        expect(w.get('[data-test=progress]').text()).toContain('Working... 7 s');
         expect(w.get('[data-test=progress]').text()).toContain('This can take up to a minute, especially the first time.');
-        expect(w.find('.spinner-border').attributes('aria-hidden')).toBe('true');
+        expect(w.get('[data-test=progress] .spinner-border').attributes('role')).toBe('status');
         expect(w.get('[data-test=ipp]').attributes('disabled')).toBeDefined();
         expect(w.get('[data-test=settings]').attributes('disabled')).toBeDefined();
         expect((w.get('[data-test=band-input]').element as HTMLInputElement).disabled).toBe(true);
         expect(w.find('[data-test=run]').exists()).toBe(false);
         session.elapsed = 65;
         await nextTick();
-        expect(w.get('[data-test=elapsed]').text()).toBe('Working... 1 min 5 s');
+        expect(w.get('[data-test=progress]').text()).toContain('Working... 1 min 5 s');
         await w.get('[data-test=cancel]').trigger('click');
         expect(spies.cancel).toHaveBeenCalledTimes(1);
     });
@@ -241,7 +240,7 @@ describe('running state', () => {
         form.lng = '172';
         startRun();
         await nextTick();
-        finishRun(result());
+        finish(result());
         await nextTick();
         expect(w.find('[data-test=progress]').exists()).toBe(false);
         expect(w.find('[data-test=cancel]').exists()).toBe(false);
@@ -251,8 +250,9 @@ describe('running state', () => {
 
 describe('SarResult', () => {
     it('shows the effective radius, the bands with swatch and text, and the data date', async () => {
+        ui.sections['result-details'] = true;
         wrapper = mount(SarResult);
-        finishRun(result());
+        finish(result());
         await nextTick();
         expect(wrapper.get('[data-test=summary]').text()).toContain('Effective radius 12 km.');
         expect(wrapper.get('[data-test=summary]').text()).toContain('Speed 2.5 km/h.');
@@ -263,9 +263,10 @@ describe('SarResult', () => {
     });
 
     it('renders the disclaimer and the attribution verbatim, as text', async () => {
+        ui.sections['result-details'] = true;
         wrapper = mount(SarResult);
         const disclaimer = 'A <b>synthetic</b> disclaimer &amp; text.';
-        finishRun(result({ disclaimer, attribution: ['One <i>x</i>', 'Two & three'] }));
+        finish(result({ disclaimer, attribution: ['One <i>x</i>', 'Two & three'] }));
         await nextTick();
         expect(wrapper.get('[data-test=disclaimer]').text()).toBe(disclaimer);
         expect(wrapper.get('[data-test=disclaimer]').find('b').exists()).toBe(false);
@@ -274,14 +275,28 @@ describe('SarResult', () => {
 
     it('prefixes warnings with Warning: and notes with Note:', async () => {
         wrapper = mount(SarResult);
-        finishRun(result());
+        finish(result());
         await nextTick();
-        expect(wrapper.findAll('[data-test=warning]').map((w) => w.text())).toEqual(['Warning: Synthetic warning.', 'Note: Synthetic note.']);
+        const alerts = wrapper.findAll('[data-test=warning]');
+        expect(alerts.map((w) => `${w.get('.alert-heading').text()}: ${w.get('.alert-description').text()}`)).toEqual(['Warning: Synthetic warning.', 'Note: Synthetic note.']);
+        expect(alerts.map((w) => w.get('.alert').classes())).toEqual([expect.arrayContaining(['alert-warning']), expect.arrayContaining(['alert-info'])]);
     });
 
-    it('says so when no contour was drawn, and omits parts the result does not have', async () => {
+    it('keeps the attribution and the data date in a closed box, the disclaimer in view', async () => {
         wrapper = mount(SarResult);
-        finishRun(result({ contours: { type: 'FeatureCollection', features: [] }, warnings: [], attribution: [], disclaimer: '', data: {} }));
+        finish(result({ disclaimer: 'Synthetic disclaimer text.' }));
+        await nextTick();
+        expect(wrapper.get('[data-test=disclaimer]').text()).toBe('Synthetic disclaimer text.');
+        expect(wrapper.find('[data-test=attribution]').exists()).toBe(false);
+        expect(wrapper.find('[data-test=built]').exists()).toBe(false);
+        await wrapper.get('[data-test=box-result-details] .slidedown__header').trigger('click');
+        expect(wrapper.find('[data-test=attribution]').exists()).toBe(true);
+        expect(wrapper.find('[data-test=built]').exists()).toBe(true);
+    });
+    it('says so when no contour was drawn, and omits parts the result does not have', async () => {
+        ui.sections['result-details'] = true;
+        wrapper = mount(SarResult);
+        finish(result({ contours: { type: 'FeatureCollection', features: [] }, warnings: [], attribution: [], disclaimer: '', data: {} }));
         await nextTick();
         expect(wrapper.get('[data-test=no-bands]').text()).toBe('No contours were drawn.');
         for (const id of ['warnings', 'disclaimer', 'attribution', 'built']) expect(wrapper.find(`[data-test=${id}]`).exists()).toBe(false);
@@ -289,7 +304,7 @@ describe('SarResult', () => {
 
     it('lists bands in time order whatever the order of the features', async () => {
         wrapper = mount(SarResult);
-        finishRun(result({ contours: { type: 'FeatureCollection', features: [feature(4), feature(0.25, { color: '#00ff00' }), feature(2.5)] } }));
+        finish(result({ contours: { type: 'FeatureCollection', features: [feature(4), feature(0.25, { color: '#00ff00' }), feature(2.5)] } }));
         await nextTick();
         expect(wrapper.findAll('[data-test=result-band]').map((b) => b.text())).toEqual(['0.25 h', '2.5 h', '4 h']);
     });
@@ -313,8 +328,10 @@ describe('errors', () => {
         const w = mountPanel();
         failRun(error);
         await settle();
-        expect(w.get('[data-test=error-message]').text()).toBe(text);
-        expect(w.get('[data-test=error-label]').text()).toBe('Error:');
+        expect(w.get('[data-test=error-alert] .alert-description').text()).toBe(text);
+        expect(w.get('[data-test=error-alert] .alert-heading').text()).toBe('Error');
+        expect(w.get('[data-test=error-alert]').attributes('class') ?? '').toContain('col-lg-12');
+        expect(w.find('[data-test=error-alert] [role=alert]').exists()).toBe(true);
     });
 
     it('offers Retry for timeouts, network failures, failures and rate limits only', async () => {
@@ -341,7 +358,7 @@ describe('errors', () => {
         const w = mountPanel();
         failRun({ kind: 'timeout', status: 504, suggestions: { radiusKm: 6 } });
         await settle();
-        expect(w.get('[data-test=error-message]').text()).toBe('The calculation took too long. Try a smaller radius.');
+        expect(w.get('[data-test=error-alert] .alert-description').text()).toBe('The calculation took too long. Try a smaller radius.');
         expect(w.find('[data-test=suggest-radius]').exists()).toBe(false);
     });
 
@@ -349,7 +366,7 @@ describe('errors', () => {
         const w = mountPanel();
         failRun(dense({ radiusKm: 6 }, null));
         await settle();
-        expect(w.get('[data-test=error-message]').element.textContent).toBe('Synthetic message, exactly  as received.');
+        expect(w.get('[data-test=error-alert] .alert-description').element.textContent).toBe('Synthetic message, exactly  as received.');
         expect(w.findAll('[data-test=error] button')).toHaveLength(0);
     });
 });
@@ -359,7 +376,7 @@ describe('dense-area refusal (area_too_dense)', () => {
         const w = mountPanel();
         failRun(dense({ radiusKm: 6 }));
         await settle();
-        expect(w.get('[data-test=error-message]').element.textContent).toBe('Synthetic message, exactly  as received.');
+        expect(w.get('[data-test=error-alert] .alert-description').element.textContent).toBe('Synthetic message, exactly  as received.');
     });
 
     it('radius only: a button "Try {n} km" that fills the radius', async () => {
@@ -399,7 +416,7 @@ describe('dense-area refusal (area_too_dense)', () => {
         const w = mountPanel();
         failRun(dense());
         await settle();
-        expect(w.get('[data-test=error-message]').text()).toBe('Synthetic message, exactly  as received.');
+        expect(w.get('[data-test=error-alert] .alert-description').text()).toBe('Synthetic message, exactly  as received.');
         expect(w.findAll('[data-test=error] button')).toHaveLength(0);
     });
 
@@ -411,7 +428,7 @@ describe('dense-area refusal (area_too_dense)', () => {
             const maxHours = badHours[i];
             failRun(dense({ radiusKm, maxHours }));
             await settle();
-            expect(w.get('[data-test=error-message]').element.textContent, String(radiusKm)).toBe('Synthetic message, exactly  as received.');
+            expect(w.get('[data-test=error-alert] .alert-description').element.textContent, String(radiusKm)).toBe('Synthetic message, exactly  as received.');
             expect(w.findAll('[data-test=error] button'), String(radiusKm)).toHaveLength(0);
         }
         // A string cannot come through the typed client, but the panel must not trust the type.
@@ -487,16 +504,17 @@ describe('dense-area refusal (area_too_dense)', () => {
         failRun({ kind: 'timeout' });
         await settle();
         expect(w.get('[data-test=live]').element.textContent).toBe('The calculation took too long. Try a smaller radius.');
-        finishRun(result());
+        finish(result());
         await settle();
-        expect(w.get('[data-test=live]').element.textContent).toBe('Calculation finished. 3 contours drawn.');
+        expect(w.get('[data-test=live]').element.textContent).toBe('Calculation finished. 3 contours and the start point added to the map as features.');
     });
 
     it('does not rely on colour: the error starts with the text "Error:"', async () => {
         const w = mountPanel();
         failRun(dense({ radiusKm: 6 }));
         await settle();
-        expect(w.get('[data-test=error]').text().startsWith('Error:')).toBe(true);
+        expect(w.get('[data-test=error]').text().startsWith('Error')).toBe(true);
+        expect(w.find('[data-test=error] [role=alert]').exists()).toBe(true);
     });
 });
 
@@ -545,9 +563,11 @@ describe('accessibility and safety', () => {
         session.picking = true;
         session.markerOpen = true;
         session.markers = [{ id: 'a', callsign: 'Alpha', lat: -40, lng: 172 }];
-        finishRun(result());
+        finish(result());
         await nextTick();
         failRun(dense({ radiusKm: 6, maxHours: 3 }));
+        await settle();
+        form.mode = 'tarr';
         await settle();
         const html = w.element as HTMLElement;
         for (const button of html.querySelectorAll('button')) {
@@ -559,15 +579,12 @@ describe('accessibility and safety', () => {
             expect(label?.textContent?.trim() || input.getAttribute('aria-label'), input.outerHTML).toBeTruthy();
         }
         expect(html.querySelectorAll('[aria-live]')).toHaveLength(1);
-        expect(w.find('[aria-label="Close travel time panel"]').exists()).toBe(true);
     });
 
-    it('has no horizontal overflow rules that break the layout: grid cells can shrink', () => {
-        const source = readFileSync(join(libDir, 'SarPanel.vue'), 'utf8');
-        expect(source).toContain('overflow-x: hidden');
-        expect(source).toContain('minmax(0, 1fr)');
-        expect(source).toContain('@container taknz-sar (min-width: 600px)');
-        expect(source).toContain('max-height: min(60dvh, calc(100dvh - 220px))');
+    it('is a single column that the host pane scrolls: no bottom-bar sizing', () => {
+        const source = readFileSync(join(libDir, 'SarPane.vue'), 'utf8');
+        expect(source).not.toMatch(/position-absolute|@container|max-height: min\(60/);
+        expect(source).toContain('min-w-0');
     });
 
     it('never uses v-html', () => {

@@ -2,7 +2,8 @@ import {
     BANDS_MAX, BANDS_MIN, HOURS_MAX, HOURS_MIN, LAT_MAX, LAT_MIN, LNG_MAX, LNG_MIN,
     RADIUS_MAX, RADIUS_MIN, SPEED_MAX, SPEED_MIN,
 } from './constants.ts';
-import type { TravelTimeBody } from './types.ts';
+import { ecoregionsOf, profileNames, terrainsOf } from './tarr-profiles.ts';
+import type { CalcRequest, Mode, TarrBody, TravelTimeBody } from './types.ts';
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -114,4 +115,60 @@ export function validateForm(form: FormInput): FormCheck {
     };
     if (radius.value !== undefined) body.radius_km = radius.value;
     return { ok: true, body };
+}
+
+export interface TarrFormInput {
+    lat: string;
+    lng: string;
+    profile: string;
+    ecoregion: string;
+    terrain: string;
+}
+
+export interface TarrFormErrors {
+    lat?: string;
+    lng?: string;
+    profile?: string;
+    ecoregion?: string;
+    terrain?: string;
+}
+
+export type TarrFormCheck = { ok: true; body: TarrBody } | { ok: false; errors: TarrFormErrors };
+
+/** Checks the TARR fields and builds the relay body. Empty ecoregion and terrain are left out. */
+export function validateTarrForm(form: TarrFormInput): TarrFormCheck {
+    const errors: TarrFormErrors = {};
+    const lat = validateLat(form.lat);
+    if (!lat.ok) errors.lat = lat.error;
+    const lng = validateLng(form.lng);
+    if (!lng.ok) errors.lng = lng.error;
+    if (form.profile === '') errors.profile = 'Choose a subject profile.';
+    else if (!profileNames().includes(form.profile)) errors.profile = 'This subject profile is not available.';
+    else {
+        if (form.ecoregion !== '' && !ecoregionsOf(form.profile).includes(form.ecoregion)) {
+            errors.ecoregion = 'This ecoregion is not available for the profile.';
+        }
+        if (form.terrain !== '' && (form.ecoregion === '' || !terrainsOf(form.profile, form.ecoregion).includes(form.terrain))) {
+            errors.terrain = 'This terrain is not available for the profile and ecoregion.';
+        }
+    }
+    if (!lat.ok || !lng.ok || Object.keys(errors).length > 0) return { ok: false, errors };
+    const body: TarrBody = { ipp: { lat: lat.value, lng: lng.value }, profile: form.profile };
+    if (form.ecoregion !== '') body.ecoregion = form.ecoregion;
+    if (form.terrain !== '') body.terrain = form.terrain;
+    return { ok: true, body };
+}
+
+export interface RunInput extends FormInput, TarrFormInput {}
+
+export type RunCheck = { ok: true; request: CalcRequest } | { ok: false; errors: FormErrors & TarrFormErrors };
+
+/** The check for the chosen mode. Only that mode's fields count. */
+export function validateRun(mode: Mode, form: RunInput): RunCheck {
+    if (mode === 'tarr') {
+        const check = validateTarrForm(form);
+        return check.ok ? { ok: true, request: { mode, body: check.body } } : check;
+    }
+    const check = validateForm(form);
+    return check.ok ? { ok: true, request: { mode, body: check.body } } : check;
 }
