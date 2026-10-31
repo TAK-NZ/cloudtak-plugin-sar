@@ -4,3 +4,9 @@ The plugin imports src/std.ts from the CloudTAK app, so the built CloudTAK web b
 includes it is a combined work under AGPL-3.0.
 The analysis backend is TAK-NZ/sar-engine, a fork of WiSAR Terrain-Aware Range Rings by
 Jamie F. Weleber (AGPL-3.0): https://github.com/clptak/WiSAR-Terrain-Aware-Range-Rings
+Third-party data and method
+The engine returns these attributions, which the plugin shows next to the contours:
+  Land cover: LCDB v6.0, Landcare Research, CC BY 4.0
+  Elevation: LINZ NZ Elevation, CC BY 4.0, with Copernicus GLO-30
+  Roads and trails: OpenStreetMap contributors, ODbL, https://www.openstreetmap.org/copyright
+  Method: WiSAR Terrain-Aware Range Rings, AGPL-3.0

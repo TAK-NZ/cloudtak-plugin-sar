@@ -1,8 +1,13 @@
 {
   "name": "cloudtak-plugin-sar",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
-  "description": "CloudTAK plugin: terrain-aware search and rescue range rings and travel-time isochrones for New Zealand",
+  "description": "CloudTAK plugin: travel-time contours for search and rescue planning in New Zealand",
   "license": "AGPL-3.0-only",
-  "main": "index.ts"
+  "main": "index.ts",
+  "scripts": {
+    "lint": "cd ../.. && npx eslint --config eslint.config.js plugins/cloudtak-plugin-sar",
+    "check": "cd ../.. && npx vue-tsc",
+    "test": "cd ../.. && npx vitest run plugins/cloudtak-plugin-sar"
+  }
 }

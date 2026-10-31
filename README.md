@@ -1,7 +1,7 @@
 # SAR (Search and Rescue)
 
-CloudTAK plugin for search and rescue planning in New Zealand: terrain-aware range rings around an Initial Planning
-Point (IPP) and travel-time isochrones, drawn as features on the CloudTAK map.
+CloudTAK plugin for search and rescue planning in New Zealand: travel-time contours around an Initial Planning
+Point (IPP), drawn on the CloudTAK map.
 
 **Status: scaffold only. There is no plugin code yet, and nothing here is usable.**
 
@@ -9,8 +9,6 @@ Point (IPP) and travel-time isochrones, drawn as features on the CloudTAK map.
 
 * Pick an IPP on the map, choose a subject profile or a travel speed, and run an analysis.
 * **Travel Time mode** (first): reachability contours at chosen time bands, from terrain, land cover and walking speed.
-* **TARR mode** (later): Lost Person Behavior percentile rings. These are **not calibrated for New Zealand** (no NZ
-  incident data yet), so they will be labelled as indicative and shown next to the plain Koester circle.
 
 ## Architecture
 
