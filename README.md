@@ -106,7 +106,7 @@ See [NOTICE](NOTICE).
 This is a planning aid. Travel Time shows reach, not where a person is. TARR rings are not calibrated for New Zealand: the distances and the multipliers come from United States records, the terrain model has not been checked against New Zealand search and rescue data, and the percentages are not the chance of finding someone in New Zealand. Use the results as one input among many, with the judgment of search planners and incident command.
 
 ## Screenshots
-The SAR planning pane in TARR Analysis mode, opened from the right-side menu, with a result on the map for a Child (7-9) profile. Each terrain-adjusted ring is filled and each plain Koester circle is dashed. The pane lists the rings, the "Not calibrated for New Zealand" line and the engine's warning. The collapsible boxes (How it works, About these numbers) are closed.
+The SAR planning pane in TARR Analysis mode, opened from the right-side menu, with a result on the map for a Hiker profile. Each terrain-adjusted ring is filled and each plain Koester circle is dashed and named along its line. The pane lists the rings, the "Not calibrated for New Zealand" line and the engine's warning. The collapsible boxes (How it works, About these numbers) are closed.
 
 ![SAR planning pane in TARR Analysis mode with terrain-adjusted rings and plain circles on the map](docs/screenshots/cloudtak-plugin-sar-tarr.png)
 
