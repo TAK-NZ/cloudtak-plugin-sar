@@ -86,6 +86,8 @@ const oursSources = (map: EventedFakeMap): string[] => [...map.sources.keys()].f
 const calcCalls = (): unknown[][] => host.fetch.mock.calls.filter((c) => c[0] === CALC_URL);
 const tarrCalls = (): unknown[][] => host.fetch.mock.calls.filter((c) => c[0] === TARR_URL);
 const callsign = (f: FakeFeature): unknown => f.properties.callsign;
+/** The named features: a filled ring is an unnamed area (id ends in -fill) plus a named outline. */
+const named = (list: FakeFeature[]): FakeFeature[] => list.filter((f) => !String(f.id).endsWith('-fill'));
 
 function type(lat = '-40', lng = '172'): void {
     form.lat = lat;
@@ -342,17 +344,21 @@ describe('a travel time calculation', () => {
     it('adds one polygon feature per band and the start point as map features', async () => {
         const ctx = await enabled();
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        expect(ctx.features.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
-        expect(ctx.features.map((f) => f.properties.type)).toEqual(['u-d-f', 'u-d-f', 'u-d-f', 'u-d-p']);
-        const ipp = ctx.features[3];
+        expect(named(ctx.features).map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(ctx.features.map((f) => f.properties.type)).toEqual(['u-d-f', 'u-d-f', 'u-d-f', 'u-d-f', 'u-d-f', 'u-d-f', 'u-d-p']);
+        // Each band is an unnamed filled area plus a named, unfilled outline, so its label sits on the line.
+        expect(ctx.features.map((f) => [String(f.id).endsWith('-fill'), f.properties.callsign, f.properties['fill-opacity']])).toEqual([
+            [true, '', 0.15], [false, 'SAR 4 h', 0], [true, '', 0.15], [false, 'SAR 2 h', 0], [true, '', 0.15], [false, 'SAR 1 h', 0], [false, 'SAR IPP', undefined],
+        ]);
+        const ipp = ctx.features[6];
         expect(ipp.geometry).toEqual({ type: 'Point', coordinates: [172, -40] });
         expect(ipp.properties).toMatchObject({ callsign: 'SAR IPP', 'marker-color': '#FFD600', archived: true });
         expect(String(ipp.properties.remarks)).toMatch(/^Initial Planning Point\. Mode: Travel Time, speed 2\.5 km\/h, bands 1, 2, 4, 8 h\. Run \d{4}-\d\d-\d\d \d\d:\d\d UTC\.$/);
-        expect(String(ctx.features[0].properties.remarks)).toContain('Synthetic disclaimer text.');
+        expect(String(ctx.features[1].properties.remarks)).toContain('Synthetic disclaimer text.');
         expect(ctx.adds).toHaveLength(1);
         expect(ctx.adds[0].mission).toBeUndefined();
         expect(session.featureIds).toEqual(ctx.features.map((f) => f.id));
-        expect(new Set(session.featureIds).size).toBe(4);
+        expect(new Set(session.featureIds).size).toBe(7);
         expect(session.meta).toMatchObject({ mode: 'travel-time', ipp: { lat: -40, lng: 172 }, speedKmh: 2.5, bandsHours: [1, 2, 4, 8] });
     });
 
@@ -389,7 +395,7 @@ describe('a travel time calculation', () => {
         controller.run();
         await flushPromises();
         expect(ctx.removes[0]).toEqual(first);
-        expect(ctx.features).toHaveLength(4);
+        expect(ctx.features).toHaveLength(7);
         expect(ctx.features.map((f) => f.id).some((id) => first.includes(id))).toBe(false);
         expect(session.featureIds).toEqual(ctx.features.map((f) => f.id));
     });
@@ -441,16 +447,18 @@ describe('a TARR calculation', () => {
     it('adds six ring polygons and the start point', async () => {
         const ctx = await enabled();
         await runTarr();
-        expect(ctx.features.map(callsign)).toEqual([
+        expect(named(ctx.features).map(callsign)).toEqual([
             'Koester 75%, plain circle (3.22 km)', 'Koester 75%, terrain-adjusted (3.703 km)',
             'Koester 50%, plain circle (1.77 km)', 'Koester 50%, terrain-adjusted (2.036 km)',
             'Koester 25%, plain circle (0.64 km)', 'Koester 25%, terrain-adjusted (0.736 km)',
             'SAR IPP',
         ]);
         expect(ctx.features.filter((f) => f.properties['stroke-style'] === 'dashed')).toHaveLength(3);
-        expect(String(ctx.features[1].properties.remarks)).toContain('multiplier 1.15 (Coconino County, Arizona)');
-        expect(String(ctx.features[1].properties.remarks)).toContain('Not calibrated for New Zealand');
-        expect(ctx.features[6].properties.remarks).toMatch(/^Initial Planning Point\. Mode: TARR, subject Hiker\. Run /);
+        expect(ctx.features).toHaveLength(10);
+        expect(ctx.features.filter((f) => String(f.id).endsWith('-fill')).map((f) => f.properties.callsign)).toEqual(['', '', '']);
+        expect(String(named(ctx.features)[1].properties.remarks)).toContain('multiplier 1.15 (Coconino County, Arizona)');
+        expect(String(named(ctx.features)[1].properties.remarks)).toContain('Not calibrated for New Zealand');
+        expect(ctx.features[9].properties.remarks).toMatch(/^Initial Planning Point\. Mode: TARR, subject Hiker\. Run /);
         expect(session.announcement).toBe('Calculation finished. 6 rings and the start point added to the map as features.');
         expect(ours(ctx.map)).toEqual([]);
     });
@@ -514,7 +522,7 @@ describe('start point preview and the IPP feature', () => {
         controller.clear();
         await flushPromises();
         expect(ctx.features).toEqual([]);
-        expect(ctx.removes.at(-1)).toHaveLength(4);
+        expect(ctx.removes.at(-1)).toHaveLength(7);
         expect(ours(ctx.map)).toEqual([]);
         expect(oursSources(ctx.map)).toEqual([]);
         expect(ctx.map.listenerCount()).toBe(0);
@@ -526,7 +534,7 @@ describe('start point preview and the IPP feature', () => {
     it('Clear also works for a TARR result', async () => {
         const ctx = await enabled();
         await runTarr();
-        expect(ctx.features).toHaveLength(7);
+        expect(ctx.features).toHaveLength(10);
         controller.clear();
         await flushPromises();
         expect(ctx.features).toEqual([]);
@@ -839,15 +847,16 @@ describe('Add to Data Sync', () => {
         await controller.addToDataSync(SYNCS);
         expect(ctx.adds.map((a) => a.mission)).toEqual([undefined, 'g1', 'g2']);
         const [one, two] = [ctx.missionFeatures.get('g1') as FakeFeature[], ctx.missionFeatures.get('g2') as FakeFeature[]];
-        expect(one.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(named(one).map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(one).toHaveLength(7);
         const ids = [...one, ...two].map((f) => f.id);
-        expect(new Set(ids).size).toBe(8);
+        expect(new Set(ids).size).toBe(14);
         expect(ids.some((id) => localIds.includes(id))).toBe(false);
         for (const f of one) expect([f.properties.id, f.properties.uid]).toEqual([f.id, f.id]);
         expect(ctx.features).toEqual([]);
         expect(session.featureIds).toEqual([]);
         expect(session.movedTo).toEqual(['Alpha', 'Bravo']);
-        expect(session.share.message).toBe('Added 4 features to "Alpha", "Bravo". They moved there from your map.');
+        expect(session.share.message).toBe('Added 7 features to "Alpha", "Bravo". They moved there from your map.');
         expect(session.announcement).toBe(session.share.message);
         expect(session.share.busy).toBe(false);
     });
@@ -855,9 +864,9 @@ describe('Add to Data Sync', () => {
     it('uses the edited features from the map, not the original result', async () => {
         const ctx = await enabled();
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        ctx.features[0].properties.callsign = 'Renamed by the user';
+        ctx.features[1].properties.callsign = 'Renamed by the user';
         await controller.addToDataSync([SYNCS[0]]);
-        expect((ctx.missionFeatures.get('g1') as FakeFeature[])[0].properties.callsign).toBe('Renamed by the user');
+        expect((ctx.missionFeatures.get('g1') as FakeFeature[])[1].properties.callsign).toBe('Renamed by the user');
     });
 
     it('keeps the features on the map and shows the error when it fails', async () => {
@@ -865,8 +874,8 @@ describe('Add to Data Sync', () => {
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
         ctx.failAddFor('g2');
         await controller.addToDataSync(SYNCS);
-        expect(ctx.features).toHaveLength(4);
-        expect(session.featureIds).toHaveLength(4);
+        expect(ctx.features).toHaveLength(7);
+        expect(session.featureIds).toHaveLength(7);
         expect(session.movedTo).toEqual([]);
         expect(session.share.error).toBe('Could not add to "Bravo": not loaded (1 of 2 done)');
         expect(session.announcement).toBe('Error: Could not add to "Bravo": not loaded (1 of 2 done)');
@@ -880,7 +889,7 @@ describe('Add to Data Sync', () => {
         await controller.addToDataSync([SYNCS[0]]);
         await controller.addToDataSync([SYNCS[1]]);
         const second = ctx.missionFeatures.get('g2') as FakeFeature[];
-        expect(second.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(named(second).map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
         expect(second.map((f) => f.id).some((id) => (ctx.missionFeatures.get('g1') as FakeFeature[]).some((g) => g.id === id))).toBe(false);
         expect(session.movedTo).toEqual(['Bravo']);
     });
@@ -890,7 +899,7 @@ describe('Add to Data Sync', () => {
         await runTarr();
         await controller.addToDataSync([SYNCS[0]]);
         const filed = ctx.missionFeatures.get('g1') as FakeFeature[];
-        expect(filed).toHaveLength(7);
+        expect(filed).toHaveLength(10);
         expect(filed.at(-1)?.properties.callsign).toBe('SAR IPP');
         expect(ctx.features).toEqual([]);
     });
@@ -923,14 +932,14 @@ describe('Create data package', () => {
         expect(init.method).toBe('PUT');
         const body = JSON.parse(init.body as string) as { name: string; public: boolean; destinations: unknown[]; features: { id: string; properties: { callsign: string } }[] };
         expect(body).toMatchObject({ name: 'My package', public: false, destinations: [] });
-        expect(body.features.map((f) => f.properties.callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(body.features.map((f) => f.properties.callsign)).toEqual(['', 'SAR 4 h', '', 'SAR 2 h', '', 'SAR 1 h', 'SAR IPP']);
         expect(body.features.map((f) => f.id)).toEqual(ctx.features.map((f) => f.id));
         expect(host.fetch.mock.calls.some((c) => c[0] === 'https://cot.test/api/marti/api/files/hash-1?name=My%20package.zip')).toBe(true);
         expect(hostMock.saveBlob).toHaveBeenCalledTimes(1);
         expect(hostMock.saveBlob.mock.calls[0][1]).toBe('My package.zip');
         expect(session.share.message).toBe('Data package "My package" created and downloaded.');
         // The features stay on the map.
-        expect(ctx.features).toHaveLength(4);
+        expect(ctx.features).toHaveLength(7);
     });
 
     it('can file the package in a Data Sync as well', async () => {
@@ -956,7 +965,7 @@ describe('Create data package', () => {
         await runTarr();
         await controller.createPackage({ name: 'T', missions: [] });
         const body = JSON.parse((host.fetch.mock.calls.find((c) => c[0] === PACKAGE_URL) as [string, RequestInit])[1].body as string) as { features: { properties: { callsign: string } }[] };
-        expect(body.features).toHaveLength(7);
+        expect(body.features).toHaveLength(10);
         expect(body.features.at(-1)?.properties.callsign).toBe('SAR IPP');
     });
 });
@@ -983,6 +992,10 @@ describe('Save to Files', () => {
         expect(kmz.entries).toEqual(['doc.kml']);
         expect(kmz.kml).toContain('<name>SAR IPP</name>');
         expect(kmz.kml).toContain('<name>SAR 4 h</name>');
+        // The KMZ has one filled Placemark per band: each area is folded into its outline.
+        expect(kmz.kml.match(/<Placemark>/g)).toHaveLength(4);
+        expect(kmz.kml).not.toContain('<name></name>');
+        expect(kmz.kml).toContain('<fill>1</fill>');
         expect(host.fetch.mock.calls.some((c) => c[0] === `${IMPORT_URL}/imp-1`)).toBe(true);
         expect(session.share.message).toBe(`Saved "${kmz.name}" to Files.`);
         expect(session.share.saved).toBe(true);
@@ -1054,13 +1067,13 @@ describe('plain circles', () => {
     it('are drawn by default, next to every terrain ring', async () => {
         const ctx = await enabled();
         await runTarr();
-        expect(ctx.features.map(callsign).filter((c) => String(c).includes('plain circle'))).toHaveLength(3);
+        expect(named(ctx.features).map(callsign).filter((c) => String(c).includes('plain circle'))).toHaveLength(3);
     });
     it('are left out of the map, the result and the KMZ when switched off', async () => {
         const ctx = await enabled();
         form.plainCircles = false;
         await runTarr();
-        expect(ctx.features.map(callsign)).toEqual([
+        expect(named(ctx.features).map(callsign)).toEqual([
             'Koester 75%, terrain-adjusted (3.703 km)', 'Koester 50%, terrain-adjusted (2.036 km)', 'Koester 25%, terrain-adjusted (0.736 km)', 'SAR IPP',
         ]);
         expect(session.result?.mode === 'tarr' && session.result.rings.map((r) => r.kind)).toEqual(['terrain', 'terrain', 'terrain']);
@@ -1084,7 +1097,7 @@ describe('plain circles', () => {
         const ctx = await enabled();
         form.plainCircles = false;
         await runWith(() => Promise.resolve(jsonResponse(200, okBody())));
-        expect(ctx.features.map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
+        expect(named(ctx.features).map(callsign)).toEqual(['SAR 4 h', 'SAR 2 h', 'SAR 1 h', 'SAR IPP']);
     });
 });
 describe('disable()', () => {
