@@ -1,5 +1,6 @@
 import { buildKml } from './kml.ts';
 import { formatStamp, formatUtc } from './format.ts';
+import { mergeFillPairs } from './features.ts';
 import type { SarFeature } from './features.ts';
 import { zipStore } from './zip.ts';
 import type { AnalysisResult, RunMeta } from './types.ts';
@@ -54,13 +55,13 @@ export function noticeText(result: AnalysisResult): string {
 }
 
 /**
- * A KMZ (a zip with one `doc.kml`) built from the features as they are now, including edits made on
+ * A KMZ (a zip with one `doc.kml`, one Placemark per ring) built from the features as they are now, including edits made on
  * the map. The document description carries the parameters, the disclaimer and the attribution.
  * Everything is built here; saving it to Files is a separate step.
  */
 export function buildKmz(features: readonly SarFeature[], result: AnalysisResult, meta: RunMeta): ExportFile {
     const description = [`Run: ${formatUtc(meta.ranAt)}`, ...parameterLines(result, meta), '', noticeText(result)].join('\n').trim();
-    const kml = buildKml(features, { name: `SAR ${MODE_TITLE[meta.mode]} ${formatUtc(meta.ranAt)}`, description });
+    const kml = buildKml(mergeFillPairs(features), { name: `SAR ${MODE_TITLE[meta.mode]} ${formatUtc(meta.ranAt)}`, description });
     const bytes = zipStore([{ name: 'doc.kml', data: new TextEncoder().encode(kml) }]);
     return { filename: exportFileName(meta), bytes, mime: 'application/vnd.google-earth.kmz' };
 }

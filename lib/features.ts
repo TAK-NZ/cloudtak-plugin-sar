@@ -123,9 +123,18 @@ function specs(result: AnalysisResult, meta: RunMeta): PolygonSpec[] {
         }));
 }
 
+/** A filled area is a separate, unnamed feature whose id is the id of its outline plus this suffix. */
+export const FILL_SUFFIX = '-fill';
+export const fillIdOf = (outlineId: string): string => `${outlineId}${FILL_SUFFIX}`;
+
 /**
  * The features of one result, largest first, the start point last. A MultiPolygon becomes one
  * feature per part (`name (2)`, `name (3)`). Inner rings are kept on the feature.
+ *
+ * CloudTAK writes the label of a filled polygon inside the area, where nested rings pile up their labels,
+ * and the label of an unfilled polygon along its outline. So a filled ring is two features: the outline,
+ * which has the name, the remarks and no fill, and the area, which has the fill and a blank name (so it
+ * has no label). The area's id is `fillIdOf(outline id)`. The dashed plain circles have no fill: one feature.
  */
 export function buildFeatures(result: AnalysisResult, meta: RunMeta, newId: () => string = newUuid, now: Date = new Date()): SarFeature[] {
     const time = now.toISOString();
@@ -133,29 +142,45 @@ export function buildFeatures(result: AnalysisResult, meta: RunMeta, newId: () =
     const out: SarFeature[] = [];
     for (const spec of specs(result, meta)) {
         parts(spec.geometry).forEach((geometry, i) => {
+            const name = i === 0 ? spec.name : `${spec.name} (${i + 1})`;
             const id = newId();
+            const common = {
+                type: 'u-d-f',
+                how: 'h-g-i-g-o',
+                archived: true,
+                time,
+                start: time,
+                stale,
+                center: centerOf(geometry),
+                stroke: spec.color,
+                'stroke-width': 3,
+                'stroke-opacity': 1,
+                'stroke-style': spec.dashed ? 'dashed' : 'solid',
+                fill: spec.color,
+            };
+            if (spec.fillOpacity > 0) {
+                const fillId = fillIdOf(id);
+                out.push({
+                    id: fillId,
+                    type: 'Feature',
+                    path: FEATURE_PATH,
+                    properties: {
+                        ...common,
+                        id: fillId,
+                        callsign: '',
+                        remarks: `Filled area of ${name}. The outline ${name} has the details.`,
+                        // No visible line: the outline feature draws it.
+                        'stroke-opacity': 0,
+                        'fill-opacity': spec.fillOpacity,
+                    },
+                    geometry,
+                });
+            }
             out.push({
                 id,
                 type: 'Feature',
                 path: FEATURE_PATH,
-                properties: {
-                    id,
-                    type: 'u-d-f',
-                    how: 'h-g-i-g-o',
-                    archived: true,
-                    callsign: i === 0 ? spec.name : `${spec.name} (${i + 1})`,
-                    remarks: spec.remarks,
-                    time,
-                    start: time,
-                    stale,
-                    center: centerOf(geometry),
-                    stroke: spec.color,
-                    'stroke-width': 3,
-                    'stroke-opacity': 1,
-                    'stroke-style': spec.dashed ? 'dashed' : 'solid',
-                    fill: spec.color,
-                    'fill-opacity': spec.fillOpacity,
-                },
+                properties: { ...common, id, callsign: name, remarks: spec.remarks, 'fill-opacity': 0 },
                 geometry,
             });
         });
@@ -185,14 +210,45 @@ export function buildFeatures(result: AnalysisResult, meta: RunMeta, newId: () =
     return out;
 }
 
-/** Deep copies with fresh ids, for filing the same features in another Data Sync (ids must not repeat between Data Syncs). */
+/**
+ * Deep copies with fresh ids, for filing the same features in another Data Sync (ids must not repeat between Data Syncs).
+ * An area keeps its link to its outline: its new id is the new id of the outline plus the suffix.
+ */
 export function copyForMission(features: readonly SarFeature[], newId: () => string = newUuid): SarFeature[] {
+    const ids = new Set(features.map((f) => f.id));
+    const fresh = new Map<string, string>();
+    for (const f of features) {
+        if (!(f.id.endsWith(FILL_SUFFIX) && ids.has(f.id.slice(0, -FILL_SUFFIX.length)))) fresh.set(f.id, newId());
+    }
     return features.map((f) => {
         const copy = JSON.parse(JSON.stringify(f)) as SarFeature;
-        const id = newId();
+        const id = fresh.get(f.id) ?? fillIdOf(fresh.get(f.id.slice(0, -FILL_SUFFIX.length)) as string);
         copy.id = id;
         copy.properties.id = id;
         copy.properties.uid = id;
         return copy;
     });
+}
+
+/**
+ * One feature per ring for the KMZ, where the label is not a problem: every area is folded into its
+ * outline, which takes over the fill colour and opacity of the area as they are now (so edits count). An outline
+ * whose area was deleted stays unfilled, and an area whose outline was deleted is kept as it is.
+ */
+export function mergeFillPairs(features: readonly SarFeature[]): SarFeature[] {
+    const byId = new Map(features.map((f) => [f.id, f]));
+    const out: SarFeature[] = [];
+    for (const f of features) {
+        if (f.id.endsWith(FILL_SUFFIX) && byId.has(f.id.slice(0, -FILL_SUFFIX.length))) continue;
+        const area = byId.get(fillIdOf(f.id));
+        if (!area) {
+            out.push(f);
+            continue;
+        }
+        out.push({
+            ...f,
+            properties: { ...f.properties, fill: area.properties.fill ?? f.properties.fill, 'fill-opacity': area.properties['fill-opacity'] ?? f.properties['fill-opacity'] },
+        });
+    }
+    return out;
 }

@@ -63,7 +63,7 @@ describe('placeFeatures', () => {
     it('logs a failed removal and goes on', async () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
         const { api, calls } = fakeApi({ failRemove: true });
-        await expect(placeFeatures(api, ['old'], features())).resolves.toHaveLength(4);
+        await expect(placeFeatures(api, ['old'], features())).resolves.toHaveLength(7);
         expect(calls.map((c) => c.fn)).toEqual(['remove', 'add']);
         expect(warn).toHaveBeenCalled();
     });
@@ -88,8 +88,9 @@ describe('addToDataSync', () => {
         expect(calls.map((c) => c.mission)).toEqual(['g1', 'g2']);
         const first = added[0] as SarFeature[];
         const second = added[1] as SarFeature[];
-        expect(first.map((x) => x.id)).toEqual(['m-1', 'm-2', 'm-3', 'm-4']);
-        expect(second.map((x) => x.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8']);
+        // An area keeps the id of its outline plus the suffix.
+        expect(first.map((x) => x.id)).toEqual(['m-1-fill', 'm-1', 'm-2-fill', 'm-2', 'm-3-fill', 'm-3', 'm-4']);
+        expect(second.map((x) => x.id)).toEqual(['m-5-fill', 'm-5', 'm-6-fill', 'm-6', 'm-7-fill', 'm-7', 'm-8']);
         for (const x of [...first, ...second]) {
             expect(x.properties.id).toBe(x.id);
             expect(x.properties.uid).toBe(x.id);
@@ -97,7 +98,7 @@ describe('addToDataSync', () => {
         // Everything else is the same, the IPP included.
         expect(first.map((x) => x.properties.callsign)).toEqual(f.map((x) => x.properties.callsign));
         expect(first.at(-1)?.properties.callsign).toBe('SAR IPP');
-        expect(f[0].id).toBe('f-1');
+        expect(f[0].id).toBe('f-1-fill');
     });
 
     it('stops at the first failure and says how far it got', async () => {
